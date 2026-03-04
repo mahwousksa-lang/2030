@@ -277,14 +277,14 @@ def _call_openrouter(prompt, system=""):
     if not OPENROUTER_API_KEY:
         return None
 
-    # نماذج مجانية بالترتيب (لا تحتاج رصيداً)
+    # نماذج مجانية صحيحة (محدَّثة مارس 2026)
     FREE_MODELS = [
-        "google/gemini-2.0-flash-exp:free",
         "meta-llama/llama-3.3-70b-instruct:free",
-        "deepseek/deepseek-r1:free",
-        "microsoft/phi-4-reasoning:free",
-        "google/gemini-2.0-flash-thinking-exp:free",
-        "qwen/qwen3-235b-a22b:free",
+        "google/gemini-2.0-flash-exp:free",
+        "deepseek/deepseek-chat-v3-0324:free",
+        "mistralai/mistral-7b-instruct:free",
+        "qwen/qwen-2.5-72b-instruct:free",
+        "google/gemma-3-27b-it:free",
     ]
 
     msgs = []
