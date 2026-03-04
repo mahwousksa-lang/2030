@@ -1742,19 +1742,110 @@ elif page == "⚙️ الإعدادات":
     tab1, tab2, tab3 = st.tabs(["🔑 المفاتيح", "⚙️ المطابقة", "📜 السجل"])
 
     with tab1:
-        gemini_s = f"✅ {len(GEMINI_API_KEYS)} مفتاح" if GEMINI_API_KEYS else "❌"
-        or_s = "✅ مفعل" if OPENROUTER_API_KEY else "❌"
+        # ── الحالة الحالية ────────────────────────────────────────────────
+        gemini_s = f"✅ {len(GEMINI_API_KEYS)} مفتاح" if GEMINI_API_KEYS else "❌ لا توجد مفاتيح"
+        or_s     = "✅ مفعل" if OPENROUTER_API_KEY else "❌ غير موجود"
+        co_s     = "✅ مفعل" if COHERE_API_KEY else "❌ غير موجود"
         st.info(f"Gemini API: {gemini_s}")
         st.info(f"OpenRouter: {or_s}")
-        st.info(f"Webhook أسعار: {'✅' if WEBHOOK_UPDATE_PRICES else '❌'}")
-        st.info(f"Webhook منتجات: {'✅' if WEBHOOK_NEW_PRODUCTS else '❌'}")
-        if st.button("🧪 اختبار AI"):
-            with st.spinner("..."):
-                r = call_ai("مرحباً، اختبار سريع. أجب: يعمل")
-                if r["success"]:
-                    st.success(f"✅ AI يعمل ({r['source']}): {r['response'][:80]}")
+        st.info(f"Cohere:     {co_s}")
+        st.info(f"Webhook أسعار:   {'✅' if WEBHOOK_UPDATE_PRICES else '❌'}")
+        st.info(f"Webhook منتجات:  {'✅' if WEBHOOK_NEW_PRODUCTS else '❌'}")
+
+        st.markdown("---")
+
+        # ── تشخيص شامل ───────────────────────────────────────────────────
+        st.subheader("🔬 تشخيص AI")
+        st.caption("يختبر الاتصال الفعلي بكل مزود ويُظهر الخطأ الحقيقي")
+
+        if st.button("🔬 تشخيص شامل لجميع المزودين", type="primary"):
+            with st.spinner("يختبر الاتصال بـ Gemini, OpenRouter, Cohere..."):
+                from engines.ai_engine import diagnose_ai_providers
+                diag = diagnose_ai_providers()
+
+            # ── نتائج Gemini ──────────────────────────────────────────────
+            st.markdown("**Gemini API:**")
+            any_gemini_ok = False
+            for g in diag.get("gemini", []):
+                status = g["status"]
+                if "✅" in status:
+                    st.success(f"مفتاح {g['key']}: {status}")
+                    any_gemini_ok = True
+                elif "⚠️" in status:
+                    st.warning(f"مفتاح {g['key']}: {status}")
                 else:
-                    st.error(r["response"])
+                    st.error(f"مفتاح {g['key']}: {status}")
+
+            # ── نتائج OpenRouter ──────────────────────────────────────────
+            or_res = diag.get("openrouter","")
+            st.markdown("**OpenRouter:**")
+            if "✅" in or_res: st.success(or_res)
+            elif "⚠️" in or_res: st.warning(or_res)
+            else: st.error(or_res)
+
+            # ── نتائج Cohere ──────────────────────────────────────────────
+            co_res = diag.get("cohere","")
+            st.markdown("**Cohere:**")
+            if "✅" in co_res: st.success(co_res)
+            elif "⚠️" in co_res: st.warning(co_res)
+            else: st.error(co_res)
+
+            # ── تحليل وتوصية ─────────────────────────────────────────────
+            or_ok = "✅" in or_res
+            co_ok = "✅" in co_res
+
+            st.markdown("---")
+            if any_gemini_ok or or_ok or co_ok:
+                working = []
+                if any_gemini_ok: working.append("Gemini")
+                if or_ok: working.append("OpenRouter")
+                if co_ok: working.append("Cohere")
+                st.success(f"✅ AI يعمل عبر: {' + '.join(working)}")
+            else:
+                st.error("❌ جميع المزودين فاشلون")
+                # تحليل السبب
+                _all_errs = [g["status"] for g in diag.get("gemini",[]) if "❌" in g.get("status","")]
+                if any("اتصال" in e or "ConnectionError" in e or "Pool" in e for e in _all_errs + [or_res, co_res]):
+                    st.warning("""
+**🔴 السبب المحتمل: Streamlit Cloud يحجب الطلبات الخارجية**
+
+الحل: في صفحة تطبيقك على Streamlit Cloud:
+1. اذهب إلى ⚙️ Settings → General
+2. ابحث عن **"Network"** أو **"Egress"**
+3. تأكد أن Outbound connections مسموح بها
+
+أو جرب نشر التطبيق على **Railway** بدلاً من Streamlit Cloud.
+                    """)
+                elif any("403" in e or "IP" in e for e in _all_errs):
+                    st.warning("🔴 مفاتيح Gemini محظورة من IP هذا الخادم — جرب OpenRouter")
+                elif any("401" in e for e in _all_errs + [or_res, co_res]):
+                    st.warning("🔴 مفتاح غير صحيح — تحقق من المفاتيح في Secrets")
+
+        st.markdown("---")
+
+        # ── سجل الأخطاء الأخيرة ──────────────────────────────────────────
+        st.subheader("📋 آخر أخطاء AI")
+        from engines.ai_engine import get_last_errors
+        errs = get_last_errors()
+        if errs:
+            for e in errs:
+                st.code(e, language=None)
+        else:
+            st.caption("لا أخطاء مسجلة بعد — جرب أي زر AI ثم ارجع هنا")
+
+        st.markdown("---")
+
+        # ── اختبار سريع ──────────────────────────────────────────────────
+        if st.button("🧪 اختبار سريع"):
+            with st.spinner("يتصل بـ AI..."):
+                r = call_ai("أجب بكلمة واحدة فقط: يعمل", "general")
+            if r["success"]:
+                st.success(f"✅ AI يعمل عبر {r['source']}: {r['response'][:80]}")
+            else:
+                st.error("❌ فشل — اضغط 'تشخيص شامل' لمعرفة السبب الدقيق")
+                from engines.ai_engine import get_last_errors
+                for e in get_last_errors()[:5]:
+                    st.code(e, language=None)
 
     with tab2:
         st.info(f"حد التطابق الأدنى: {MIN_MATCH_SCORE}%")
