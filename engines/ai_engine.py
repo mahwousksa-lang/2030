@@ -76,7 +76,7 @@ def diagnose_ai_providers() -> dict:
     if OPENROUTER_API_KEY:
         try:
             r = requests.post(_OR, json={
-                "model": "google/gemini-2.0-flash-001",
+                "model": "google/gemini-2.0-flash-exp:free",
                 "messages": [{"role":"user","content":"test"}],
                 "max_tokens": 5
             }, headers={
@@ -272,37 +272,67 @@ def _call_gemini(prompt, system="", grounding=False, temperature=0.3, max_tokens
 def _call_openrouter(prompt, system=""):
     if not OPENROUTER_API_KEY:
         return None
-    try:
-        msgs = []
-        if system:
-            msgs.append({"role":"system","content":system})
-        msgs.append({"role":"user","content":prompt})
-        r = requests.post(_OR, json={
-            "model": "google/gemini-2.0-flash-001",
-            "messages": msgs, "temperature": 0.3, "max_tokens": 8192
-        }, headers={
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "HTTP-Referer": "https://mahwous.com",
-            "X-Title": "Mahwous"
-        }, timeout=45)
-        if r.status_code == 200:
-            return r.json()["choices"][0]["message"]["content"]
-        elif r.status_code == 401:
-            _log_err("OpenRouter", "مفتاح غير صحيح (401)")
-        elif r.status_code == 402:
-            _log_err("OpenRouter", "رصيد منتهٍ (402)")
-        elif r.status_code == 429:
-            _log_err("OpenRouter", "Rate Limit (429)")
-        else:
-            try: msg = r.json().get("error",{}).get("message","")
-            except: msg = r.text[:100]
-            _log_err("OpenRouter", f"{r.status_code} — {msg[:80]}")
-    except requests.exceptions.ConnectionError as e:
-        _log_err("OpenRouter", f"لا اتصال — {str(e)[:80]}")
-    except requests.exceptions.Timeout:
-        _log_err("OpenRouter", "Timeout (45s)")
-    except Exception as e:
-        _log_err("OpenRouter", f"{str(e)[:80]}")
+
+    # نماذج مجانية بالترتيب (لا تحتاج رصيداً)
+    FREE_MODELS = [
+        "google/gemini-2.0-flash-exp:free",
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "deepseek/deepseek-r1:free",
+        "microsoft/phi-4-reasoning:free",
+        "google/gemini-2.0-flash-thinking-exp:free",
+        "qwen/qwen3-235b-a22b:free",
+    ]
+
+    msgs = []
+    if system:
+        msgs.append({"role": "system", "content": system})
+    msgs.append({"role": "user", "content": prompt})
+
+    for model in FREE_MODELS:
+        try:
+            r = requests.post(_OR, json={
+                "model": model,
+                "messages": msgs,
+                "temperature": 0.3,
+                "max_tokens": 8192
+            }, headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "HTTP-Referer": "https://mahwous.com",
+                "X-Title": "Mahwous"
+            }, timeout=45)
+
+            if r.status_code == 200:
+                content = r.json()["choices"][0]["message"]["content"]
+                if content and content.strip():
+                    return content
+            elif r.status_code == 429:
+                _log_err("OpenRouter", f"{model}: Rate Limit (429)")
+                time.sleep(1)
+                continue
+            elif r.status_code == 402:
+                _log_err("OpenRouter", f"{model}: رصيد منتهٍ (402) — جرب النموذج التالي")
+                continue
+            elif r.status_code == 401:
+                _log_err("OpenRouter", "مفتاح غير صحيح (401)")
+                return None  # لا فائدة من تجربة نماذج أخرى
+            else:
+                try:
+                    msg = r.json().get("error", {}).get("message", "")
+                except Exception:
+                    msg = r.text[:100]
+                _log_err("OpenRouter", f"{model}: {r.status_code} — {msg[:80]}")
+                continue
+
+        except requests.exceptions.ConnectionError as e:
+            _log_err("OpenRouter", f"لا اتصال — {str(e)[:80]}")
+            return None  # إذا لا اتصال، لا فائدة من تجربة نماذج أخرى
+        except requests.exceptions.Timeout:
+            _log_err("OpenRouter", f"{model}: Timeout (45s)")
+            continue
+        except Exception as e:
+            _log_err("OpenRouter", f"{model}: {str(e)[:80]}")
+            continue
+
     return None
 
 def _call_cohere(prompt, system=""):
