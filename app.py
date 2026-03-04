@@ -91,56 +91,79 @@ def decision_badge(action):
 # ════════════════════════════════════════════════
 #  المعالجة الخلفية
 # ════════════════════════════════════════════════
-def _run_analysis_background(job_id, our_df, comp_dfs, our_file_name, comp_names):
-    """تعمل في thread منفصل — تحفظ التقدم كل 10 منتجات"""
-    total = len(our_df)
-    processed = 0
-    partial_results = []
+def _split_results(df):
+    """تقسيم نتائج التحليل على الأقسام بأمان تام"""
+    def _contains(col, txt):
+        try:
+            return df[col].str.contains(txt, na=False, regex=False)
+        except Exception:
+            return pd.Series([False] * len(df))
+    return {
+        "price_raise": df[_contains("القرار", "أعلى")].reset_index(drop=True),
+        "price_lower": df[_contains("القرار", "أقل")].reset_index(drop=True),
+        "approved":    df[_contains("القرار", "موافق")].reset_index(drop=True),
+        "review":      df[_contains("القرار", "مراجعة")].reset_index(drop=True),
+        "all":         df,
+    }
 
-    def progress_cb(pct):
+
+def _run_analysis_background(job_id, our_df, comp_dfs, our_file_name, comp_names):
+    """تعمل في thread منفصل — تحفظ النتائج الحقيقية كل 10 منتجات"""
+    total     = len(our_df)
+    processed = 0
+
+    def progress_cb(pct, current_results):
         nonlocal processed
         processed = int(pct * total)
         if processed % 10 == 0 or processed >= total:
-            save_job_progress(job_id, total, processed,
-                              partial_results, "running",
-                              our_file_name, comp_names)
+            save_job_progress(
+                job_id, total, processed,
+                current_results,  # ← النتائج الفعلية المتراكمة
+                "running",
+                our_file_name, comp_names
+            )
 
     try:
-        analysis_df = run_full_analysis(our_df, comp_dfs,
-                                        progress_callback=progress_cb)
+        analysis_df = run_full_analysis(
+            our_df, comp_dfs,
+            progress_callback=progress_cb
+        )
+
         # حفظ تاريخ الأسعار
         for _, row in analysis_df.iterrows():
-            if row.get("نسبة_التطابق", 0) > 0:
+            if safe_float(row.get("نسبة_التطابق", 0)) > 0:
                 upsert_price_history(
-                    str(row.get("المنتج", "")),
-                    str(row.get("المنافس", "")),
+                    str(row.get("المنتج",       "")),
+                    str(row.get("المنافس",       "")),
                     safe_float(row.get("سعر_المنافس", 0)),
-                    safe_float(row.get("السعر", 0)),
-                    safe_float(row.get("الفرق", 0)),
+                    safe_float(row.get("السعر",       0)),
+                    safe_float(row.get("الفرق",        0)),
                     safe_float(row.get("نسبة_التطابق", 0)),
-                    str(row.get("القرار", ""))
+                    str(row.get("القرار",         ""))
                 )
 
         missing_df = find_missing_products(our_df, comp_dfs)
-        results = {
-            "price_raise": analysis_df[analysis_df["القرار"].str.contains("أعلى", na=False)].reset_index(drop=True),
-            "price_lower": analysis_df[analysis_df["القرار"].str.contains("أقل",  na=False)].reset_index(drop=True),
-            "approved":    analysis_df[analysis_df["القرار"].str.contains("موافق",na=False)].reset_index(drop=True),
-            "review":      analysis_df[analysis_df["القرار"].str.contains("مراجعة",na=False)].reset_index(drop=True),
-            "missing": missing_df,
-            "all":     analysis_df,
-        }
-        save_job_progress(job_id, total, total,
-                          analysis_df.to_dict("records"),
-                          "done", our_file_name, comp_names,
-                          missing=missing_df.to_dict("records") if not missing_df.empty else [])
-        log_analysis(our_file_name, comp_names, total,
-                     len(analysis_df[analysis_df["نسبة_التطابق"] > 0]),
-                     len(missing_df))
+
+        save_job_progress(
+            job_id, total, total,
+            analysis_df.to_dict("records"),
+            "done",
+            our_file_name, comp_names,
+            missing=missing_df.to_dict("records") if not missing_df.empty else []
+        )
+        log_analysis(
+            our_file_name, comp_names, total,
+            int((analysis_df.get("نسبة_التطابق", pd.Series(dtype=float)) > 0).sum()),
+            len(missing_df)
+        )
 
     except Exception as e:
-        save_job_progress(job_id, total, processed,
-                          [], f"error: {str(e)}", our_file_name, comp_names)
+        import traceback
+        save_job_progress(
+            job_id, total, processed,
+            [], f"error: {str(e)}",
+            our_file_name, comp_names
+        )
 
 
 # ════════════════════════════════════════════════
@@ -688,13 +711,10 @@ if page == "📊 لوحة التحكم":
             if st.button("🔄 استعادة النتائج المحفوظة"):
                 df_all = pd.DataFrame(last["results"])
                 if not df_all.empty:
-                    st.session_state.results = {
-                        "price_raise": df_all[df_all["القرار"].str.contains("أعلى",na=False)].reset_index(drop=True),
-                        "price_lower": df_all[df_all["القرار"].str.contains("أقل", na=False)].reset_index(drop=True),
-                        "approved":    df_all[df_all["القرار"].str.contains("موافق",na=False)].reset_index(drop=True),
-                        "review":      df_all[df_all["القرار"].str.contains("مراجعة",na=False)].reset_index(drop=True),
-                        "missing": pd.DataFrame(last.get("missing", [])) if last.get("missing") else pd.DataFrame(), "all": df_all,
-                    }
+                    missing_df = pd.DataFrame(last.get("missing", [])) if last.get("missing") else pd.DataFrame()
+                    _r = _split_results(df_all)
+                    _r["missing"] = missing_df
+                    st.session_state.results     = _r
                     st.session_state.analysis_df = df_all
                     st.rerun()
         else:
@@ -776,22 +796,19 @@ elif page == "📂 رفع الملفات":
                         job = get_job_progress(job_id)
                         if job and job["status"] == "done" and job.get("results"):
                             df_all = pd.DataFrame(job["results"])
-                            # استعادة المنتجات المفقودة من قاعدة البيانات
                             missing_df = pd.DataFrame(job.get("missing", [])) if job.get("missing") else pd.DataFrame()
-                            st.session_state.results = {
-                                "price_raise": df_all[df_all["القرار"].str.contains("أعلى",na=False)].reset_index(drop=True),
-                                "price_lower": df_all[df_all["القرار"].str.contains("أقل", na=False)].reset_index(drop=True),
-                                "approved":    df_all[df_all["القرار"].str.contains("موافق",na=False)].reset_index(drop=True),
-                                "review":      df_all[df_all["القرار"].str.contains("مراجعة",na=False)].reset_index(drop=True),
-                                "missing": missing_df, "all": df_all,
-                            }
-                            st.session_state.analysis_df = df_all
+                            _r = _split_results(df_all)
+                            _r["missing"] = missing_df
+                            st.session_state.results       = _r
+                            st.session_state.analysis_df   = df_all
+                            st.session_state.job_running   = False
                             progress_bar.progress(1.0, "✅ اكتمل!")
                             st.balloons()
+                            st.rerun()
                     else:
                         # ── مباشر ──
                         prog = st.progress(0, "جاري التحليل...")
-                        def upd(p): prog.progress(p, f"{p*100:.0f}%")
+                        def upd(p, _r=None): prog.progress(min(float(p), 0.99), f"{float(p)*100:.0f}%")
                         df_all = run_full_analysis(our_df, comp_dfs, progress_callback=upd)
                         missing_df = find_missing_products(our_df, comp_dfs)
 
@@ -806,18 +823,16 @@ elif page == "📂 رفع الملفات":
                                     str(row.get("القرار",""))
                                 )
 
-                        st.session_state.results = {
-                            "price_raise": df_all[df_all["القرار"].str.contains("أعلى",na=False)].reset_index(drop=True),
-                            "price_lower": df_all[df_all["القرار"].str.contains("أقل", na=False)].reset_index(drop=True),
-                            "approved":    df_all[df_all["القرار"].str.contains("موافق",na=False)].reset_index(drop=True),
-                            "review":      df_all[df_all["القرار"].str.contains("مراجعة",na=False)].reset_index(drop=True),
-                            "missing": missing_df, "all": df_all,
-                        }
+                        _r = _split_results(df_all)
+                        _r["missing"] = missing_df
+                        st.session_state.results     = _r
                         st.session_state.analysis_df = df_all
                         log_analysis(our_file.name, comp_names, len(our_df),
-                                     len(df_all[df_all["نسبة_التطابق"]>0]), len(missing_df))
+                                     int((df_all.get("نسبة_التطابق", pd.Series(dtype=float)) > 0).sum()),
+                                     len(missing_df))
                         prog.progress(1.0, "✅ اكتمل!")
                         st.balloons()
+                        st.rerun()
         else:
             st.warning("⚠️ ارفع ملف منتجاتنا وملف منافس واحد على الأقل")
 
