@@ -1,20 +1,133 @@
 """
-engines/ai_engine.py v21.0 — خبير مهووس الكامل
+engines/ai_engine.py v24.0 — خبير مهووس الكامل
 ════════════════════════════════════════════════
+✅ تسجيل الأخطاء الحقيقية (لا يبتلعها)
+✅ تشخيص ذاتي لكل مزود AI
 ✅ خبير وصف منتجات مهووس الكامل (SEO + GEO)
 ✅ جلب صور المنتج من Fragrantica + Google
 ✅ بحث ويب DuckDuckGo + Gemini Grounding
 ✅ تحقق AI يُصحّح القسم الخاطئ
 ✅ تصنيف تلقائي لقسم "تحت المراجعة"
-✅ كل زر له وظيفة AI حقيقية ومدربة
 """
-import requests, json, re, time
+import requests, json, re, time, traceback
 from config import GEMINI_API_KEYS, OPENROUTER_API_KEY, COHERE_API_KEY
 
 _GM  = "gemini-2.0-flash"
 _GU  = f"https://generativelanguage.googleapis.com/v1beta/models/{_GM}:generateContent"
 _OR  = "https://openrouter.ai/api/v1/chat/completions"
 _CO  = "https://api.cohere.ai/v1/generate"
+
+# ── سجل الأخطاء الأخيرة (يُعرض في صفحة التشخيص) ─────────────────────────
+_LAST_ERRORS: list = []
+
+def _log_err(source: str, msg: str):
+    global _LAST_ERRORS
+    entry = f"[{source}] {msg}"
+    _LAST_ERRORS = ([entry] + _LAST_ERRORS)[:10]  # آخر 10 أخطاء
+
+def get_last_errors() -> list:
+    return _LAST_ERRORS.copy()
+
+# ── تشخيص شامل لجميع مزودي AI ─────────────────────────────────────────────
+def diagnose_ai_providers() -> dict:
+    """
+    يختبر كل مزود ويُعيد تقريراً مفصلاً بالأخطاء الحقيقية.
+    يُستدعى من صفحة الإعدادات.
+    """
+    results = {}
+
+    # ── Gemini ────────────────────────────────────────────────────────────
+    gemini_results = []
+    for i, key in enumerate(GEMINI_API_KEYS or []):
+        if not key:
+            gemini_results.append({"key": i+1, "status": "❌ مفتاح فارغ"})
+            continue
+        try:
+            payload = {
+                "contents": [{"parts": [{"text": "test"}]}],
+                "generationConfig": {"maxOutputTokens": 5}
+            }
+            r = requests.post(f"{_GU}?key={key}", json=payload, timeout=15)
+            if r.status_code == 200:
+                gemini_results.append({"key": i+1, "status": "✅ يعمل"})
+            elif r.status_code == 400:
+                try: msg = r.json().get("error",{}).get("message","Bad Request")
+                except: msg = r.text[:100]
+                gemini_results.append({"key": i+1, "status": f"❌ 400 — {msg[:80]}"})
+            elif r.status_code == 403:
+                gemini_results.append({"key": i+1, "status": "❌ 403 — مفتاح غير مصرح أو IP محظور"})
+            elif r.status_code == 429:
+                gemini_results.append({"key": i+1, "status": "⚠️ 429 — تجاوز الحد (Rate Limit)"})
+            elif r.status_code == 404:
+                gemini_results.append({"key": i+1, "status": f"❌ 404 — النموذج {_GM} غير متاح"})
+            else:
+                try: msg = r.json().get("error",{}).get("message","")
+                except: msg = r.text[:100]
+                gemini_results.append({"key": i+1, "status": f"❌ {r.status_code} — {msg[:80]}"})
+        except requests.exceptions.ConnectionError as e:
+            gemini_results.append({"key": i+1, "status": f"❌ لا يوجد اتصال بالإنترنت أو جدار حماية: {str(e)[:60]}"})
+        except requests.exceptions.Timeout:
+            gemini_results.append({"key": i+1, "status": "❌ انتهت المهلة (Timeout 15s)"})
+        except Exception as e:
+            gemini_results.append({"key": i+1, "status": f"❌ خطأ: {str(e)[:80]}"})
+    results["gemini"] = gemini_results
+
+    # ── OpenRouter ────────────────────────────────────────────────────────
+    if OPENROUTER_API_KEY:
+        try:
+            r = requests.post(_OR, json={
+                "model": "google/gemini-2.0-flash-001",
+                "messages": [{"role":"user","content":"test"}],
+                "max_tokens": 5
+            }, headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "HTTP-Referer": "https://mahwous.com"
+            }, timeout=15)
+            if r.status_code == 200:
+                results["openrouter"] = "✅ يعمل"
+            elif r.status_code == 401:
+                results["openrouter"] = "❌ 401 — مفتاح OpenRouter غير صحيح"
+            elif r.status_code == 402:
+                results["openrouter"] = "❌ 402 — رصيد OpenRouter منتهٍ"
+            elif r.status_code == 429:
+                results["openrouter"] = "⚠️ 429 — تجاوز الحد"
+            else:
+                try: msg = r.json().get("error",{}).get("message","")
+                except: msg = r.text[:100]
+                results["openrouter"] = f"❌ {r.status_code} — {msg[:80]}"
+        except requests.exceptions.ConnectionError:
+            results["openrouter"] = "❌ لا اتصال بـ openrouter.ai — قد يكون محظوراً"
+        except requests.exceptions.Timeout:
+            results["openrouter"] = "❌ Timeout"
+        except Exception as e:
+            results["openrouter"] = f"❌ {str(e)[:80]}"
+    else:
+        results["openrouter"] = "⚠️ مفتاح غير موجود"
+
+    # ── Cohere ────────────────────────────────────────────────────────────
+    if COHERE_API_KEY:
+        try:
+            r = requests.post("https://api.cohere.ai/v1/generate", json={
+                "model": "command-r-plus", "prompt": "test", "max_tokens": 5
+            }, headers={"Authorization": f"Bearer {COHERE_API_KEY}"}, timeout=15)
+            if r.status_code == 200:
+                results["cohere"] = "✅ يعمل"
+            elif r.status_code == 401:
+                results["cohere"] = "❌ 401 — مفتاح Cohere غير صحيح"
+            elif r.status_code == 402:
+                results["cohere"] = "❌ 402 — رصيد Cohere منتهٍ"
+            else:
+                try: msg = r.json().get("message","")
+                except: msg = r.text[:100]
+                results["cohere"] = f"❌ {r.status_code} — {msg[:80]}"
+        except requests.exceptions.ConnectionError:
+            results["cohere"] = "❌ لا اتصال بـ api.cohere.ai"
+        except Exception as e:
+            results["cohere"] = f"❌ {str(e)[:80]}"
+    else:
+        results["cohere"] = "⚠️ مفتاح غير موجود"
+
+    return results
 
 # ══ خبير وصف منتجات مهووس الكامل ══════════════════════════════════════════
 MAHWOUS_EXPERT_SYSTEM = """أنت خبير عالمي في كتابة أوصاف منتجات العطور محسّنة لمحركات البحث التقليدية (Google SEO) ومحركات بحث الذكاء الاصطناعي (GEO/AIO). تعمل حصرياً لمتجر "مهووس" (Mahwous) - الوجهة الأولى للعطور الفاخرة في السعودية.
@@ -115,8 +228,14 @@ def _call_gemini(prompt, system="", grounding=False, temperature=0.3, max_tokens
     }
     if grounding:
         payload["tools"] = [{"google_search": {}}]
-    for key in GEMINI_API_KEYS:
-        if not key: continue
+
+    if not GEMINI_API_KEYS:
+        _log_err("Gemini", "لا توجد مفاتيح API")
+        return None
+
+    for i, key in enumerate(GEMINI_API_KEYS):
+        if not key:
+            continue
         try:
             r = requests.post(f"{_GU}?key={key}", json=payload, timeout=45)
             if r.status_code == 200:
@@ -124,37 +243,93 @@ def _call_gemini(prompt, system="", grounding=False, temperature=0.3, max_tokens
                 if data.get("candidates"):
                     parts = data["candidates"][0]["content"]["parts"]
                     return "".join(p.get("text","") for p in parts)
+                else:
+                    # blocked / safety filter
+                    reason = data.get("promptFeedback",{}).get("blockReason","")
+                    _log_err("Gemini", f"مفتاح {i+1}: لا نتائج — {reason}")
             elif r.status_code == 429:
-                time.sleep(1); continue
-        except: continue
+                _log_err("Gemini", f"مفتاح {i+1}: Rate Limit (429)")
+                time.sleep(1)
+                continue
+            elif r.status_code == 403:
+                _log_err("Gemini", f"مفتاح {i+1}: IP محظور أو مفتاح غير مصرح (403)")
+            elif r.status_code == 404:
+                _log_err("Gemini", f"مفتاح {i+1}: نموذج غير متاح {_GM} (404)")
+            else:
+                try:
+                    msg = r.json().get("error",{}).get("message","")
+                except Exception:
+                    msg = r.text[:100]
+                _log_err("Gemini", f"مفتاح {i+1}: {r.status_code} — {msg[:80]}")
+        except requests.exceptions.ConnectionError as e:
+            _log_err("Gemini", f"مفتاح {i+1}: لا اتصال — {str(e)[:80]}")
+        except requests.exceptions.Timeout:
+            _log_err("Gemini", f"مفتاح {i+1}: Timeout (45s)")
+        except Exception as e:
+            _log_err("Gemini", f"مفتاح {i+1}: {str(e)[:80]}")
     return None
 
 def _call_openrouter(prompt, system=""):
-    if not OPENROUTER_API_KEY: return None
+    if not OPENROUTER_API_KEY:
+        return None
     try:
         msgs = []
-        if system: msgs.append({"role":"system","content":system})
+        if system:
+            msgs.append({"role":"system","content":system})
         msgs.append({"role":"user","content":prompt})
         r = requests.post(_OR, json={
-            "model":"google/gemini-2.0-flash-001",
-            "messages":msgs,"temperature":0.3,"max_tokens":8192
-        }, headers={"Authorization":f"Bearer {OPENROUTER_API_KEY}",
-                    "HTTP-Referer":"https://mahwous.com","X-Title":"Mahwous"}, timeout=45)
+            "model": "google/gemini-2.0-flash-001",
+            "messages": msgs, "temperature": 0.3, "max_tokens": 8192
+        }, headers={
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "HTTP-Referer": "https://mahwous.com",
+            "X-Title": "Mahwous"
+        }, timeout=45)
         if r.status_code == 200:
             return r.json()["choices"][0]["message"]["content"]
-    except: pass
+        elif r.status_code == 401:
+            _log_err("OpenRouter", "مفتاح غير صحيح (401)")
+        elif r.status_code == 402:
+            _log_err("OpenRouter", "رصيد منتهٍ (402)")
+        elif r.status_code == 429:
+            _log_err("OpenRouter", "Rate Limit (429)")
+        else:
+            try: msg = r.json().get("error",{}).get("message","")
+            except: msg = r.text[:100]
+            _log_err("OpenRouter", f"{r.status_code} — {msg[:80]}")
+    except requests.exceptions.ConnectionError as e:
+        _log_err("OpenRouter", f"لا اتصال — {str(e)[:80]}")
+    except requests.exceptions.Timeout:
+        _log_err("OpenRouter", "Timeout (45s)")
+    except Exception as e:
+        _log_err("OpenRouter", f"{str(e)[:80]}")
     return None
 
 def _call_cohere(prompt, system=""):
-    if not COHERE_API_KEY: return None
+    if not COHERE_API_KEY:
+        return None
     try:
         full = f"{system}\n\n{prompt}" if system else prompt
         r = requests.post(_CO, json={
-            "model":"command-r-plus","prompt":full,"max_tokens":4096,"temperature":0.3
-        }, headers={"Authorization":f"Bearer {COHERE_API_KEY}"}, timeout=35)
+            "model": "command-r-plus", "prompt": full,
+            "max_tokens": 4096, "temperature": 0.3
+        }, headers={"Authorization": f"Bearer {COHERE_API_KEY}"}, timeout=35)
         if r.status_code == 200:
             return r.json().get("generations",[{}])[0].get("text","")
-    except: pass
+        elif r.status_code == 401:
+            _log_err("Cohere", "مفتاح غير صحيح (401)")
+        elif r.status_code == 402:
+            _log_err("Cohere", "رصيد منتهٍ (402)")
+        else:
+            try: msg = r.json().get("message","")
+            except: msg = r.text[:80]
+            _log_err("Cohere", f"{r.status_code} — {msg[:80]}")
+    except requests.exceptions.ConnectionError as e:
+        _log_err("Cohere", f"لا اتصال — {str(e)[:80]}")
+    except requests.exceptions.Timeout:
+        _log_err("Cohere", "Timeout (35s)")
+    except Exception as e:
+        _log_err("Cohere", f"{str(e)[:80]}")
     return None
 
 def _parse_json(txt):
