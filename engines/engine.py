@@ -21,7 +21,8 @@ import requests as _req
 try:
     from config import (REJECT_KEYWORDS, KNOWN_BRANDS, WORD_REPLACEMENTS,
                         MATCH_THRESHOLD, HIGH_CONFIDENCE, REVIEW_THRESHOLD,
-                        PRICE_TOLERANCE, TESTER_KEYWORDS, SET_KEYWORDS, GEMINI_API_KEYS)
+                        PRICE_TOLERANCE, TESTER_KEYWORDS, SET_KEYWORDS,
+                        GEMINI_API_KEYS, OPENROUTER_API_KEY)
 except:
     REJECT_KEYWORDS = ["sample","عينة","عينه","decant","تقسيم","split","miniature"]
     KNOWN_BRANDS = [
@@ -68,6 +69,7 @@ except:
 WORD_REPLACEMENTS = {}
 MATCH_THRESHOLD = 85; HIGH_CONFIDENCE = 95; REVIEW_THRESHOLD = 75
 PRICE_TOLERANCE = 5; TESTER_KEYWORDS = ["tester","تستر"]; SET_KEYWORDS = ["set","طقم","مجموعة"]
+OPENROUTER_API_KEY = ""
 
 # ─── قراءة مفاتيح Gemini من Railway Environment Variables ───
 import os as _os
@@ -633,69 +635,137 @@ class CompIndex:
 
 
 # ═══════════════════════════════════════════════════════
-#  Gemini Batch — 10 منتجات / استدعاء
+#  AI Batch — Gemini + OpenRouter fallback
 # ═══════════════════════════════════════════════════════
-_GURL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+_GURL    = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+_OR_URL  = "https://openrouter.ai/api/v1/chat/completions"
+_OR_FREE = [
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "google/gemini-2.0-flash-exp:free",
+    "deepseek/deepseek-chat-v3-0324:free",
+    "mistralai/mistral-7b-instruct:free",
+]
 
 def _ai_batch(batch):
     """
     batch: [{"our":str, "price":float, "candidates":[...]}]
     → [int]  (0-based index | -1=no match)
+    يحاول Gemini أولاً ثم OpenRouter تلقائياً — لا يتوقف أبداً
     """
-    if not GEMINI_API_KEYS or not batch: return [0]*len(batch)
+    if not batch:
+        return []
 
-    # cache key
+    # ── cache ────────────────────────────────────────────────────────────
     ck = hashlib.md5(json.dumps(
-        [{"o":x["our"], "c":[c["name"] for c in x["candidates"]]} for x in batch],
+        [{"o": x["our"], "c": [c["name"] for c in x["candidates"]]} for x in batch],
         ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     cached = _cget(ck)
-    if cached is not None: return cached
+    if cached is not None:
+        return cached
 
+    # ── بناء الـ prompt ───────────────────────────────────────────────────
     lines = []
     for i, it in enumerate(batch):
         cands = "\n".join(
             f"  {j+1}. {c['name']} | {int(c.get('size',0))}ml | "
             f"{c.get('type','?')} | {c.get('gender','?')} | {c.get('price',0):.0f}ر.س"
-            for j,c in enumerate(it["candidates"])
+            for j, c in enumerate(it["candidates"])
         )
         lines.append(f"[{i+1}] منتجنا: «{it['our']}» ({it['price']:.0f}ر.س)\n{cands}")
 
     prompt = (
         "خبير عطور فاخرة. لكل منتج اختر رقم المرشح المطابق تماماً أو 0 إذا لا يوجد.\n"
-        "الشروط: ✓نفس الماركة ✓نفس الحجم (±5ml) ✓نفس EDP/EDT ✓نفس الجنس إذا مذكور\n\n"
+        "الشروط: نفس الماركة + نفس الحجم ±5ml + نفس EDP/EDT + نفس الجنس\n\n"
         + "\n\n".join(lines)
         + f'\n\nJSON فقط: {{"results":[r1,r2,...,r{len(batch)}]}}'
     )
 
-    payload = {"contents":[{"parts":[{"text":prompt}]}],
-               "generationConfig":{"temperature":0,"maxOutputTokens":200,"topP":1,"topK":1}}
+    def _parse(txt):
+        """يحلل استجابة AI إلى قائمة أرقام"""
+        try:
+            clean = re.sub(r'```json|```', '', txt).strip()
+            s = clean.find('{'); e = clean.rfind('}') + 1
+            if s < 0 or e <= s:
+                return None
+            raw = json.loads(clean[s:e]).get("results", [])
+            out = []
+            for j, it in enumerate(batch):
+                n = raw[j] if j < len(raw) else 1
+                try:
+                    n = int(float(str(n)))
+                except Exception:
+                    n = 1
+                if 1 <= n <= len(it["candidates"]):
+                    out.append(n - 1)
+                elif n == 0:
+                    out.append(-1)
+                else:
+                    out.append(0)
+            return out if len(out) == len(batch) else None
+        except Exception:
+            return None
 
-    for attempt in range(3):
-        for key in GEMINI_API_KEYS:
-            if not key: continue
+    # ── 1. Gemini ─────────────────────────────────────────────────────────
+    g_payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0, "maxOutputTokens": 300, "topP": 1, "topK": 1}
+    }
+    for key in (GEMINI_API_KEYS or []):
+        if not key:
+            continue
+        try:
+            r = _req.post(f"{_GURL}?key={key}", json=g_payload, timeout=25)
+            if r.status_code == 200:
+                txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                out = _parse(txt)
+                if out:
+                    _cset(ck, out)
+                    return out
+            elif r.status_code == 429:
+                time.sleep(1.5)
+            # 403/400 → جرب المفتاح التالي فوراً
+        except Exception:
+            continue
+
+    # ── 2. OpenRouter fallback ────────────────────────────────────────────
+    or_key = OPENROUTER_API_KEY
+    if or_key:
+        for model in _OR_FREE:
             try:
-                r = _req.post(f"{_GURL}?key={key}", json=payload, timeout=22)
+                r = _req.post(_OR_URL, json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0,
+                    "max_tokens": 300,
+                }, headers={
+                    "Authorization": f"Bearer {or_key}",
+                    "HTTP-Referer": "https://mahwous.com",
+                }, timeout=30)
                 if r.status_code == 200:
-                    txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-                    clean = re.sub(r'```json|```','',txt).strip()
-                    s = clean.find('{'); e = clean.rfind('}')+1
-                    if s>=0 and e>s:
-                        raw = json.loads(clean[s:e]).get("results",[])
-                        out = []
-                        for j,it in enumerate(batch):
-                            n = raw[j] if j<len(raw) else 1
-                            try: n=int(n)
-                            except: n=1
-                            if 1<=n<=len(it["candidates"]): out.append(n-1)
-                            elif n==0: out.append(-1)
-                            else: out.append(0)
+                    txt = r.json()["choices"][0]["message"]["content"]
+                    out = _parse(txt)
+                    if out:
                         _cset(ck, out)
                         return out
-                elif r.status_code==429:
-                    time.sleep(2**attempt)
-            except: continue
-        time.sleep(1)
-    return [0]*len(batch)
+                elif r.status_code in (404, 400):
+                    continue
+                elif r.status_code in (401, 402):
+                    break
+            except Exception:
+                continue
+
+    # ── 3. Fuzzy fallback — لا يتوقف أبداً ──────────────────────────────
+    # عند فشل كل AI → قرر حسب score الـ fuzzy
+    out = []
+    for it in batch:
+        cands = it.get("candidates", [])
+        if not cands:
+            out.append(-1)
+        elif cands[0].get("score", 0) >= 88:
+            out.append(0)   # ثقة عالية → خذ الأول
+        else:
+            out.append(-1)  # ثقة منخفضة → مراجعة
+    return out
 
 
 # ═══════════════════════════════════════════════════════
@@ -770,7 +840,7 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True):
     """
     1. بناء CompIndex لكل منافس (تطبيع مسبق)
     2. لكل منتجنا → search vectorized
-    3. score≥97 → تلقائي | 62-96 → AI batch | <62 → مفقود
+    3. score≥97 → تلقائي | 62-96 → AI batch | <62 → مراجعة
     """
     results = []
     our_col       = _fcol(our_df, ["المنتج","اسم المنتج","Product","Name","name"])
@@ -796,34 +866,39 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True):
 
     total   = len(our_df)
     pending = []
-    BATCH   = 12  # زيادة الـ batch لتقليل استدعاءات API
+    BATCH   = 12
 
     def _flush():
-        if not pending: return
+        """يُعالج الـ pending batch ويضيف النتائج مباشرة"""
+        if not pending:
+            return
         idxs = _ai_batch(pending)
         for j, it in enumerate(pending):
-            ci = idxs[j] if j<len(idxs) else 0
+            ci = idxs[j] if j < len(idxs) else 0
             if ci < 0:
-                results.append(_row(it["product"],it["our_price"],it["our_id"],
-                                    it["brand"],it["size"],it["ptype"],it["gender"],
-                                    None,"🔍 منتجات مفقودة","gemini_no_match"))
+                results.append(_row(it["product"], it["our_price"], it["our_id"],
+                                    it["brand"], it["size"], it["ptype"], it["gender"],
+                                    None, "⚠️ تحت المراجعة", "ai_uncertain"))
             else:
                 best = it["candidates"][ci]
-                results.append(_row(it["product"],it["our_price"],it["our_id"],
-                                    it["brand"],it["size"],it["ptype"],it["gender"],
-                                    best,src="gemini",all_cands=it["all_cands"]))
+                results.append(_row(it["product"], it["our_price"], it["our_id"],
+                                    it["brand"], it["size"], it["ptype"], it["gender"],
+                                    best, src="gemini", all_cands=it["all_cands"]))
         pending.clear()
 
     for i, (_, row) in enumerate(our_df.iterrows()):
-        product = str(row.get(our_col,"")).strip()
+        product = str(row.get(our_col, "")).strip()
         if not product or is_sample(product):
-            if progress_callback: progress_callback((i+1)/total)
+            if progress_callback:
+                progress_callback((i + 1) / total, results)
             continue
 
         our_price = 0.0
         if our_price_col:
-            try: our_price = float(str(row[our_price_col]).replace(",",""))
-            except: pass
+            try:
+                our_price = float(str(row[our_price_col]).replace(",", ""))
+            except Exception:
+                pass
 
         our_id  = _pid(row, our_id_col)
         brand   = extract_brand(product)
@@ -836,12 +911,14 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True):
         # ── جمع المرشحين من كل الفهارس ──
         all_cands = []
         for idx_obj in indices.values():
-            all_cands.extend(idx_obj.search(our_n, brand, size, ptype, gender, our_pline=our_pl, top_n=5))
+            all_cands.extend(idx_obj.search(our_n, brand, size, ptype, gender,
+                                            our_pline=our_pl, top_n=5))
 
         if not all_cands:
-            results.append(_row(product,our_price,our_id,brand,size,ptype,gender,
-                                None,"🔍 منتجات مفقودة"))
-            if progress_callback: progress_callback((i+1)/total)
+            results.append(_row(product, our_price, our_id, brand, size, ptype, gender,
+                                None, "⚠️ تحت المراجعة"))
+            if progress_callback:
+                progress_callback((i + 1) / total, results)
             continue
 
         all_cands.sort(key=lambda x: x["score"], reverse=True)
@@ -849,18 +926,20 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True):
         best0 = top5[0]
 
         if best0["score"] >= 97 or not use_ai:
-            # واضح تماماً → لا حاجة AI
-            results.append(_row(product,our_price,our_id,brand,size,ptype,gender,
-                                best0,src="auto",all_cands=all_cands))
+            results.append(_row(product, our_price, our_id, brand, size, ptype, gender,
+                                best0, src="auto", all_cands=all_cands))
         else:
-            # غامض → AI batch
-            pending.append(dict(product=product,our_price=our_price,our_id=our_id,
-                                brand=brand,size=size,ptype=ptype,gender=gender,
-                                candidates=top5,all_cands=all_cands,
-                                our=product,price=our_price))
-            if len(pending) >= BATCH: _flush()
+            pending.append(dict(
+                product=product, our_price=our_price, our_id=our_id,
+                brand=brand, size=size, ptype=ptype, gender=gender,
+                candidates=top5, all_cands=all_cands,
+                our=product, price=our_price
+            ))
+            if len(pending) >= BATCH:
+                _flush()
 
-        if progress_callback: progress_callback((i+1)/total)
+        if progress_callback:
+            progress_callback((i + 1) / total, results)
 
     _flush()
     return pd.DataFrame(results)
