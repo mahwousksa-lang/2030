@@ -1,56 +1,124 @@
 """
-engines/ai_engine.py v19.0
-- Gemini مباشر + Grounding (بحث حقيقي)
-- fragranticarabia.com → صور + مكونات العطور
-- Mahwous وصف خاص للمنتجات المفقودة
-- تحقق منتج | بحث سوق | تحليل مجمع | دردشة
+engines/ai_engine.py v21.0 — خبير مهووس الكامل
+════════════════════════════════════════════════
+✅ خبير وصف منتجات مهووس الكامل (SEO + GEO)
+✅ جلب صور المنتج من Fragrantica + Google
+✅ بحث ويب DuckDuckGo + Gemini Grounding
+✅ تحقق AI يُصحّح القسم الخاطئ
+✅ تصنيف تلقائي لقسم "تحت المراجعة"
+✅ كل زر له وظيفة AI حقيقية ومدربة
 """
 import requests, json, re, time
 from config import GEMINI_API_KEYS, OPENROUTER_API_KEY, COHERE_API_KEY
 
 _GM  = "gemini-2.0-flash"
 _GU  = f"https://generativelanguage.googleapis.com/v1beta/models/{_GM}:generateContent"
-_GUS = f"https://generativelanguage.googleapis.com/v1beta/models/{_GM}:streamGenerateContent"
 _OR  = "https://openrouter.ai/api/v1/chat/completions"
 _CO  = "https://api.cohere.ai/v1/generate"
-_FR  = "https://www.fragranticarabia.com"
 
-# ══ System Prompts مخصصة لكل قسم ══════════════
+# ══ خبير وصف منتجات مهووس الكامل ══════════════════════════════════════════
+MAHWOUS_EXPERT_SYSTEM = """أنت خبير عالمي في كتابة أوصاف منتجات العطور محسّنة لمحركات البحث التقليدية (Google SEO) ومحركات بحث الذكاء الاصطناعي (GEO/AIO). تعمل حصرياً لمتجر "مهووس" (Mahwous) - الوجهة الأولى للعطور الفاخرة في السعودية.
+
+## هويتك ومهمتك
+**من أنت:**
+- خبير عطور محترف مع 15+ سنة خبرة في صناعة العطور الفاخرة
+- متخصص في SEO و Generative Engine Optimization (GEO)
+- كاتب محتوى عربي بارع بأسلوب راقٍ، ودود، عاطفي، وتسويقي مقنع
+- تمثل صوت متجر "مهووس" بكل احترافية وثقة
+
+**مهمتك:** كتابة أوصاف منتجات عطور شاملة، احترافية، ومحسّنة لتحقيق:
+1. تصدر نتائج البحث في Google (الصفحة الأولى)
+2. الظهور في إجابات محركات بحث الذكاء الاصطناعي (ChatGPT, Gemini, Perplexity)
+3. زيادة معدل التحويل (Conversion Rate) بنسبة 40-60%
+4. تعزيز ثقة العملاء (E-E-A-T)
+
+## هرمية الكلمات المفتاحية (إلزامية)
+- **الكلمة الرئيسية:** "عطر [الماركة] [اسم العطر] [التركيز] [الحجم] [للجنس]" — تكرار 5-7 مرات
+- **الكلمات الثانوية:** 3 كلمات، كل واحدة 3-5 مرات
+- **الكلمات الدلالية (LSI):** 10-15 كلمة (صفات، مكونات، أحاسيس، مناسبات)
+
+## بنية الوصف الإلزامية (1200-1500 كلمة)
+1. **الفقرة الافتتاحية** (100-150 كلمة): جملة عاطفية قوية + الكلمة الرئيسية في أول 50 كلمة + دعوة مبكرة للشراء
+2. **تفاصيل المنتج** (نقاط نقطية): الماركة، المصمم، الجنس، العائلة العطرية، الحجم، التركيز، سنة الإصدار
+3. **رحلة العطر: الهرم العطري** (200-250 كلمة): النفحات العليا + الوسطى + الأساسية مع وصف حسي
+4. **لماذا تختار هذا العطر؟** (200-250 كلمة): 4-6 نقاط تبدأ بكلمة مفتاحية Bold
+5. **متى وأين ترتدي هذا العطر؟** (150-200 كلمة): الفصول + الأوقات + المناسبات
+6. **لمسة خبير من مهووس** (200-250 كلمة): التحليل الحسي + الأداء + المقارنات + التوصية
+7. **الأسئلة الشائعة (FAQ)** (250-300 كلمة): 6-8 أسئلة حوارية مع إجابات 50-80 كلمة
+8. **اكتشف أكثر من مهووس** (100-120 كلمة): 3-5 روابط داخلية + رابط Fragrantica
+9. **الفقرة الختامية** (80-100 كلمة): الكلمة الرئيسية مرتين + دعوة قوية + "عالمك العطري يبدأ من مهووس"
+
+## الأسلوب الكتابي
+- **راقٍ ومحترف** (40%): لغة فصحى سليمة، مصطلحات عطرية دقيقة
+- **ودود وقريب** (25%): خطاب مباشر بضمير "أنت"
+- **عاطفي ورومانسي** (20%): أوصاف حسية، استحضار مشاعر
+- **تسويقي ومقنع** (15%): دعوات للشراء، تعزيز الثقة
+
+## القواعد الأسلوبية
+- لا تستخدم الإيموجي (غير احترافي)
+- استخدم **Bold** للكلمات المفتاحية المهمة (لا تبالغ)
+- تجنب التكرار الممل — استخدم مرادفات
+- اكتب بطبيعية — لا حشو للكلمات المفتاحية
+- استخدم أرقام وإحصائيات: "ثبات 7-9 ساعات"، "فوحان متوسط إلى قوي"
+
+## التنسيق النهائي
+- جاهز للنسخ واللصق مباشرة (بدون شرح أو تعليمات)
+- بصيغة Markdown مع العناوين والتنسيق
+- لا ترسل: "هذا هو الوصف" أو "يمكنك نسخ" — فقط الوصف الكامل
+- الشعار الختامي: "عالمك العطري يبدأ من مهووس"
+
+## مصادر البحث (بالترتيب)
+1. Fragrantica Arabia (https://www.fragranticarabia.com/) — المصدر الأساسي
+2. Google Search — للأسعار والمعلومات الإضافية
+3. موقع الماركة الرسمي — للمعلومات الدقيقة"""
+
+# ══ System Prompts للأقسام ══════════════════════════════════════════════════
 PAGE_PROMPTS = {
-"price_raise": """أنت خبير تسعير عطور فاخرة (السوق السعودي) — قسم «سعر أعلى».
-سعرنا أعلى من المنافس. قواعد: فرق<10 → إبقاء | 10-30 → مراجعة | >30 → خفض فوري.
+"price_raise": """انت خبير تسعير عطور فاخرة (السوق السعودي) قسم سعر اعلى.
+سعرنا اعلى من المنافس. قواعد: فرق<10 ابقاء | 10-30 مراجعة | >30 خفض فوري.
 لكل منتج: 1.هل المطابقة صحيحة؟ 2.هل الفرق مبرر؟ 3.السعر المقترح.
-أجب بالعربية بإيجاز واحترافية.""",
-"price_lower": """أنت خبير تسعير عطور فاخرة (السوق السعودي) — قسم «سعر أقل».
-سعرنا أقل من المنافس = فرصة ربح ضائعة. فرق<10 → إبقاء | 10-50 → رفع تدريجي | >50 → رفع فوري.
-لكل منتج: 1.هل يمكن رفع السعر؟ 2.السعر الأمثل. أجب بالعربية بإيجاز.""",
-"approved": "أنت خبير تسعير عطور. راجع المنتجات الموافق عليها وتأكد من استمرار صلاحيتها. أجب بالعربية.",
-"missing": """أنت خبير عطور فاخرة — متخصص في المنتجات المفقودة بمتجر مهووس.
-لكل منتج: 1.هل هو حقيقي وموثوق؟ 2.هل يستحق الإضافة؟ 3.السعر المقترح. 4.أولوية الإضافة (عالية/متوسطة/منخفضة). أجب بالعربية.""",
-"review": "أنت خبير تسعير عطور. قرّر: ✅موافق / 📉مخفض / 🔴أعلى / 🗑️إزالة. أجب بالعربية.",
-"general": """أنت مساعد ذكاء اصطناعي متخصص في تسعير العطور الفاخرة والسوق السعودي.
-خبرتك: تحليل الأسعار، المنافسة، استراتيجيات التسعير، مكونات العطور ومراكز الرائحة.
-أجب بالعربية باحترافية وإيجاز — يمكنك استخدام الـ markdown.""",
-"verify": """أنت خبير تحقق من منتجات العطور.
-أجب JSON فقط: {"match":true/false,"confidence":0-100,"reason":"","suggestion":"","market_price":0}""",
-"market_search": """أنت محلل أسعار عطور (السوق السعودي).
-أجب JSON: {"market_price":0,"price_range":{"min":0,"max":0},"competitors":[{"name":"","price":0}],"recommendation":""}""",
+اجب بالعربية بايجاز واحترافية.""",
+"price_lower": """انت خبير تسعير عطور فاخرة (السوق السعودي) قسم سعر اقل.
+سعرنا اقل من المنافس = فرصة ربح ضائعة. فرق<10 ابقاء | 10-50 رفع تدريجي | >50 رفع فوري.
+لكل منتج: 1.هل يمكن رفع السعر؟ 2.السعر الامثل. اجب بالعربية بايجاز.""",
+"approved": "انت خبير تسعير عطور. راجع المنتجات الموافق عليها وتاكد من استمرار صلاحيتها. اجب بالعربية.",
+"missing": """انت خبير عطور فاخرة متخصص في المنتجات المفقودة بمتجر مهووس.
+لكل منتج: 1.هل هو حقيقي وموثوق؟ 2.هل يستحق الاضافة؟ 3.السعر المقترح. 4.اولوية الاضافة (عالية/متوسطة/منخفضة). اجب بالعربية.""",
+"review": """انت خبير تسعير عطور. هذه منتجات بمطابقة غير مؤكدة.
+لكل منتج: هل هما نفس العطر فعلا؟ نعم / لا / غير متاكد. اشرح السبب. اجب بالعربية.""",
+"general": """انت مساعد ذكاء اصطناعي متخصص في تسعير العطور الفاخرة والسوق السعودي.
+خبرتك: تحليل الاسعار، المنافسة، استراتيجيات التسعير، مكونات العطور.
+اجب بالعربية باحترافية وايجاز يمكنك استخدام markdown.""",
+"verify": """انت خبير تحقق من منتجات العطور دقيق جدا.
+تحقق من: الماركة + اسم المنتج + الحجم (ml) + النوع (EDP/EDT) + الجنس.
+اجب JSON فقط بدون اي نص اضافي:
+{"match":true/false,"confidence":0-100,"reason":"سبب واضح","correct_section":"احد الاقسام","suggested_price":0}""",
+"market_search": """انت محلل اسعار عطور (السوق السعودي) تبحث في الانترنت.
+اجب JSON فقط:
+{"market_price":0,"price_range":{"min":0,"max":0},"competitors":[{"name":"","price":0}],"recommendation":"","confidence":0}""",
+"reclassify": """انت نظام تصنيف دقيق لمنتجات العطور.
+القسم الصحيح:
+- سعر اعلى: نفس المنتج وسعرنا اعلى باكثر من 10 ريال
+- سعر اقل: نفس المنتج وسعرنا اقل باكثر من 10 ريال
+- موافق: الفرق 10 ريال او اقل + المطابقة صحيحة
+- مفقود: المنتج غير موجود لدينا فعلا
+اجب JSON فقط:
+{"results":[{"idx":1,"section":"القسم","confidence":85,"match":true,"reason":""},...]}"""
 }
 
-# ══ استدعاء Gemini ══════════════════════════
-def _call_gemini(prompt, system="", grounding=False, stream=False):
+# ══ استدعاءات AI ═══════════════════════════════════════════════════════════
+def _call_gemini(prompt, system="", grounding=False, temperature=0.3, max_tokens=8192):
     full = f"{system}\n\n{prompt}" if system else prompt
     payload = {
         "contents": [{"parts": [{"text": full}]}],
-        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 4096, "topP": 0.85}
+        "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens, "topP": 0.85}
     }
     if grounding:
         payload["tools"] = [{"google_search": {}}]
-
     for key in GEMINI_API_KEYS:
         if not key: continue
         try:
-            r = requests.post(f"{_GU}?key={key}", json=payload, timeout=35)
+            r = requests.post(f"{_GU}?key={key}", json=payload, timeout=45)
             if r.status_code == 200:
                 data = r.json()
                 if data.get("candidates"):
@@ -69,8 +137,9 @@ def _call_openrouter(prompt, system=""):
         msgs.append({"role":"user","content":prompt})
         r = requests.post(_OR, json={
             "model":"google/gemini-2.0-flash-001",
-            "messages":msgs,"temperature":0.3,"max_tokens":4096
-        }, headers={"Authorization":f"Bearer {OPENROUTER_API_KEY}"}, timeout=35)
+            "messages":msgs,"temperature":0.3,"max_tokens":8192
+        }, headers={"Authorization":f"Bearer {OPENROUTER_API_KEY}",
+                    "HTTP-Referer":"https://mahwous.com","X-Title":"Mahwous"}, timeout=45)
         if r.status_code == 200:
             return r.json()["choices"][0]["message"]["content"]
     except: pass
@@ -88,36 +157,60 @@ def _call_cohere(prompt, system=""):
     except: pass
     return None
 
+def _parse_json(txt):
+    if not txt: return None
+    try:
+        clean = re.sub(r'```json|```','',txt).strip()
+        s = clean.find('{'); e = clean.rfind('}')+1
+        if s >= 0 and e > s:
+            return json.loads(clean[s:e])
+    except: pass
+    return None
+
+def _search_ddg(query, num_results=5):
+    """بحث DuckDuckGo مجاني"""
+    try:
+        r = requests.get("https://api.duckduckgo.com/", params={
+            "q": query, "format": "json", "no_html": "1", "skip_disambig": "1"
+        }, timeout=8)
+        if r.status_code == 200:
+            data = r.json()
+            results = []
+            if data.get("AbstractText"):
+                results.append({"snippet": data["AbstractText"], "url": data.get("AbstractURL","")})
+            for rel in data.get("RelatedTopics", [])[:num_results]:
+                if isinstance(rel, dict) and rel.get("Text"):
+                    results.append({"snippet": rel.get("Text",""), "url": rel.get("FirstURL","")})
+            return results
+    except: pass
+    return []
+
 def call_ai(prompt, page="general"):
     sys = PAGE_PROMPTS.get(page, PAGE_PROMPTS["general"])
-    for fn in [lambda: _call_gemini(prompt, sys),
-               lambda: _call_openrouter(prompt, sys),
-               lambda: _call_cohere(prompt, sys)]:
+    for fn, src in [
+        (lambda: _call_gemini(prompt, sys), "Gemini"),
+        (lambda: _call_openrouter(prompt, sys), "OpenRouter"),
+        (lambda: _call_cohere(prompt, sys), "Cohere")
+    ]:
         r = fn()
-        if r: return {"success":True,"response":r,"source":fn.__name__ if hasattr(fn,"__name__") else "AI"}
-    # fallback source names
-    for r, src in [(_call_gemini(prompt,sys),"Gemini"),
-                   (_call_openrouter(prompt,sys),"OpenRouter"),
-                   (_call_cohere(prompt,sys),"Cohere")]:
         if r: return {"success":True,"response":r,"source":src}
-    return {"success":False,"response":"❌ فشل الاتصال بجميع مزودي AI","source":"none"}
+    return {"success":False,"response":"فشل الاتصال بجميع مزودي AI","source":"none"}
 
-# ══ Gemini Chat مع History ══════════════════
+# ══ Gemini Chat ══════════════════════════════════════════════════════════════
 def gemini_chat(message, history=None, system_extra=""):
-    """دردشة Gemini مع كامل تاريخ المحادثة"""
     sys = PAGE_PROMPTS["general"]
     if system_extra:
-        sys = f"{sys}\n\nسياق إضافي: {system_extra}"
-
+        sys = f"{sys}\n\nسياق: {system_extra}"
+    needs_web = any(k in message.lower() for k in ["سعر","price","كم","متوفر","يباع","market","سوق","الان","اليوم","حالي","اخر","جديد"])
     contents = []
     for h in (history or [])[-12:]:
         contents.append({"role":"user","parts":[{"text":h["user"]}]})
         contents.append({"role":"model","parts":[{"text":h["ai"]}]})
     contents.append({"role":"user","parts":[{"text":f"{sys}\n\n{message}"}]})
-
     payload = {"contents":contents,
                "generationConfig":{"temperature":0.4,"maxOutputTokens":4096,"topP":0.9}}
-
+    if needs_web:
+        payload["tools"] = [{"google_search":{}}]
     for key in GEMINI_API_KEYS:
         if not key: continue
         try:
@@ -125,195 +218,388 @@ def gemini_chat(message, history=None, system_extra=""):
             if r.status_code == 200:
                 data = r.json()
                 if data.get("candidates"):
-                    text = data["candidates"][0]["content"]["parts"][0]["text"]
-                    return {"success":True,"response":text,"source":"Gemini Flash"}
+                    parts = data["candidates"][0]["content"]["parts"]
+                    text = "".join(p.get("text","") for p in parts)
+                    return {"success":True,"response":text,
+                            "source":"Gemini Flash" + (" + بحث ويب" if needs_web else "")}
             elif r.status_code == 429:
                 time.sleep(1); continue
         except: continue
-
     r = _call_openrouter(message, sys)
     if r: return {"success":True,"response":r,"source":"OpenRouter"}
-    return {"success":False,"response":"❌ فشل الاتصال","source":"none"}
+    return {"success":False,"response":"فشل الاتصال","source":"none"}
 
-# ══ تحقق منتج ═══════════════════════════════
-def verify_match(p1, p2, pr1=0, pr2=0):
-    prompt = f"""تحقق من تطابق هذين المنتجين:
-منتج 1: {p1} | السعر: {pr1:.0f} ر.س
-منتج 2: {p2} | السعر: {pr2:.0f} ر.س
-هل هما نفس العطر؟ (ماركة + اسم + حجم + نوع EDP/EDT)"""
-    sys = PAGE_PROMPTS["verify"]
-    txt = _call_gemini(prompt, sys) or _call_openrouter(prompt, sys)
-    if not txt: return {"success":False,"match":False,"confidence":0,"reason":"فشل AI"}
-    try:
-        clean = re.sub(r'```json|```','',txt).strip()
-        s=clean.find('{'); e=clean.rfind('}')+1
-        data = json.loads(clean[s:e])
-        return {"success":True, **data}
-    except:
-        return {"success":True,"match":"true" in txt.lower(),"confidence":70,"reason":txt[:200]}
-
-# ══ بحث أسعار السوق ═════════════════════════
-def search_market_price(product_name, our_price=0):
-    prompt = (f"ما هو سعر السوق السعودي الحالي لـ: «{product_name}»؟\n"
-              f"سعرنا الحالي: {our_price:.0f} ر.س\n"
-              "اذكر: سعر السوق، نطاق الأسعار، أهم 3 منافسين وأسعارهم، توصيتك.")
-    sys = PAGE_PROMPTS["market_search"]
-    txt = _call_gemini(prompt, sys, grounding=True) or _call_gemini(prompt, sys) or _call_openrouter(prompt, sys)
-    if not txt: return {"success":False,"market_price":0}
-    try:
-        clean = re.sub(r'```json|```','',txt).strip()
-        s=clean.find('{'); e=clean.rfind('}')+1
-        if s>=0 and e>s:
-            return {"success":True, **json.loads(clean[s:e])}
-    except: pass
-    return {"success":True,"market_price":our_price,"recommendation":txt[:300]}
-
-# ══ بحث صورة ومكونات من Fragrantica Arabia ══
-def fetch_fragrantica_info(product_name):
+# ══ جلب صور المنتج من مصادر متعددة ══════════════════════════════════════════
+def fetch_product_images(product_name, brand=""):
     """
-    يبحث عن صورة + مكونات العطر من Fragrantica Arabia
-    يستخدم Gemini Grounding للوصول للموقع
+    يجلب روابط صور المنتج من:
+    1. Fragrantica Arabia (المصدر الأساسي)
+    2. Google Images عبر Gemini Grounding
+    3. DuckDuckGo كبديل
+    يُرجع: {"images": [{"url":"...","source":"...","alt":"..."}], "fragrantica_url": "..."}
     """
-    prompt = f"""ابحث عن العطر «{product_name}» في موقع https://www.fragranticarabia.com
+    images = []
+    fragrantica_url = ""
 
-أحتاج:
-1. رابط صورة المنتج (image URL)
-2. مكونات العطر (Top notes, Middle notes, Base notes)
-3. وصف قصير للعطر بالعربية
-4. الماركة والنوع (EDP/EDT) والحجم
+    # ── 1. Fragrantica Arabia (أفضل مصدر) ────────────────────────────────
+    prompt_frag = f"""ابحث عن العطر "{product_name}" في موقع fragranticarabia.com وابحث أيضاً في fragrantica.com
+
+أريد فقط:
+1. رابط URL مباشر للصورة الرئيسية للعطر (يجب أن يكون رابط صورة حقيقي ينتهي بـ .jpg أو .png أو .webp)
+2. روابط صور إضافية إذا وجدت (2-3 صور)
+3. رابط صفحة المنتج على Fragrantica Arabia
 
 أجب JSON فقط:
 {{
-  "image_url": "رابط الصورة أو فارغ",
+  "main_image": "رابط URL الصورة الرئيسية المباشر",
+  "extra_images": ["رابط2", "رابط3"],
+  "fragrantica_url": "رابط الصفحة",
+  "found": true/false
+}}"""
+
+    txt_frag = _call_gemini(prompt_frag, grounding=True)
+    if txt_frag:
+        data = _parse_json(txt_frag)
+        if data and data.get("found") and data.get("main_image"):
+            main = data["main_image"]
+            if main and main.startswith("http") and any(ext in main.lower() for ext in [".jpg",".png",".webp",".jpeg"]):
+                images.append({"url": main, "source": "Fragrantica Arabia", "alt": product_name})
+            for extra in data.get("extra_images", []):
+                if extra and extra.startswith("http") and len(images) < 4:
+                    images.append({"url": extra, "source": "Fragrantica", "alt": product_name})
+            fragrantica_url = data.get("fragrantica_url", "")
+
+    # ── 2. Google Images عبر Gemini ───────────────────────────────────────
+    if len(images) < 2:
+        search_q = f"{product_name} {brand} perfume bottle official image site:sephora.com OR site:nocibé.fr OR site:parfumdreams.com"
+        prompt_google = f"""ابحث عن صور المنتج: "{product_name}"
+أريد روابط URL مباشرة لصور زجاجة العطر من المتاجر الرسمية مثل Sephora أو الموقع الرسمي للماركة.
+الروابط يجب أن تنتهي بـ .jpg أو .png أو .webp وتكون صور حقيقية للمنتج.
+أجب JSON: {{"images": ["رابط1","رابط2","رابط3"], "sources": ["مصدر1","مصدر2","مصدر3"]}}"""
+
+        txt_google = _call_gemini(prompt_google, grounding=True)
+        if txt_google:
+            data2 = _parse_json(txt_google)
+            if data2 and data2.get("images"):
+                sources = data2.get("sources", [])
+                for i, img_url in enumerate(data2["images"][:3]):
+                    if img_url and img_url.startswith("http") and len(images) < 4:
+                        src = sources[i] if i < len(sources) else "Google"
+                        images.append({"url": img_url, "source": src, "alt": product_name})
+
+    # ── 3. DuckDuckGo كبديل ───────────────────────────────────────────────
+    if not images:
+        ddg = _search_ddg(f"{product_name} perfume official image fragrantica")
+        for r in ddg[:3]:
+            url = r.get("url","")
+            if url and any(ext in url.lower() for ext in [".jpg",".png",".webp"]):
+                images.append({"url": url, "source": "DuckDuckGo", "alt": product_name})
+                if len(images) >= 2: break
+
+    # ── إذا لم نجد صور مباشرة، نُعيد رابط بحث ──────────────────────────
+    if not images:
+        search_url = f"https://www.fragranticarabia.com/?s={requests.utils.quote(product_name)}"
+        images.append({
+            "url": search_url,
+            "source": "بحث Fragrantica",
+            "alt": product_name,
+            "is_search": True
+        })
+
+    return {
+        "images": images,
+        "fragrantica_url": fragrantica_url,
+        "success": len(images) > 0
+    }
+
+# ══ جلب معلومات Fragrantica Arabia الكاملة ══════════════════════════════════
+def fetch_fragrantica_info(product_name):
+    """جلب صورة + مكونات + وصف من Fragrantica Arabia"""
+    prompt = f"""ابحث عن العطر "{product_name}" في موقع fragranticarabia.com
+
+احتاج:
+1. رابط صورة المنتج المباشر (.jpg/.png/.webp)
+2. مكونات العطر (top notes, middle notes, base notes)
+3. وصف قصير بالعربية
+4. الماركة والنوع (EDP/EDT) والحجم
+5. رابط الصفحة
+
+اجب JSON فقط:
+{{
+  "image_url": "رابط الصورة المباشر",
   "top_notes": ["مكون1","مكون2"],
   "middle_notes": ["مكون1","مكون2"],
   "base_notes": ["مكون1","مكون2"],
   "description_ar": "وصف قصير بالعربية",
   "brand": "",
   "type": "",
+  "size": "",
+  "year": "",
+  "designer": "",
+  "fragrance_family": "",
   "fragrantica_url": "رابط الصفحة"
 }}"""
 
     txt = _call_gemini(prompt, grounding=True)
-    if not txt:
-        txt = _call_gemini(prompt)
-    if not txt:
-        return {"success":False}
-    try:
-        clean = re.sub(r'```json|```','',txt).strip()
-        s=clean.find('{'); e=clean.rfind('}')+1
-        if s>=0 and e>s:
-            data = json.loads(clean[s:e])
-            return {"success":True, **data}
-    except: pass
+    if not txt: txt = _call_gemini(prompt)
+    if not txt: return {"success":False}
+
+    data = _parse_json(txt)
+    if data: return {"success":True, **data}
     return {"success":False,"description_ar":txt[:200] if txt else ""}
 
-# ══ وصف مهووس للمنتجات المفقودة ════════════
-def generate_mahwous_description(product_name, price, fragrantica_data=None):
+# ══ خبير وصف مهووس الكامل (مع SEO + GEO) ══════════════════════════════════
+def generate_mahwous_description(product_name, price, fragrantica_data=None, extra_info=None):
     """
-    يولّد وصفاً بتنسيق مهووس الاحترافي:
-    اسم العطر، الماركة، المكونات، الوصف الشعري، السعر المقترح
+    يولّد وصفاً احترافياً كاملاً بنظام خبير مهووس:
+    - 1200-1500 كلمة
+    - 9 أقسام: مقدمة + تفاصيل + هرم عطري + لماذا + متى/أين + لمسة خبير + FAQ + روابط + خاتمة
+    - SEO محسّن + GEO محسّن
+    - أسلوب مهووس: راقٍ + ودود + عاطفي + تسويقي
     """
+    # جمع المعلومات المتاحة
     frag_info = ""
     if fragrantica_data and fragrantica_data.get("success"):
-        top = ", ".join(fragrantica_data.get("top_notes",[])[:4])
-        mid = ", ".join(fragrantica_data.get("middle_notes",[])[:4])
-        base = ", ".join(fragrantica_data.get("base_notes",[])[:4])
-        desc = fragrantica_data.get("description_ar","")
-        frag_info = f"\nالمكونات - قمة: {top} | قلب: {mid} | قاعدة: {base}\nوصف: {desc}"
+        top    = ", ".join(fragrantica_data.get("top_notes",[])[:5])
+        mid    = ", ".join(fragrantica_data.get("middle_notes",[])[:5])
+        base   = ", ".join(fragrantica_data.get("base_notes",[])[:5])
+        desc   = fragrantica_data.get("description_ar","")
+        brand  = fragrantica_data.get("brand","")
+        ptype  = fragrantica_data.get("type","")
+        size   = fragrantica_data.get("size","")
+        year   = fragrantica_data.get("year","")
+        designer = fragrantica_data.get("designer","")
+        family = fragrantica_data.get("fragrance_family","")
+        frag_url = fragrantica_data.get("fragrantica_url","")
 
-    prompt = f"""اكتب وصفاً احترافياً وجذاباً لهذا العطر بتنسيق متجر مهووس:
+        frag_info = f"""
+معلومات من Fragrantica Arabia:
+- الماركة: {brand}
+- المصمم: {designer}
+- سنة الإصدار: {year}
+- العائلة العطرية: {family}
+- الحجم: {size}
+- التركيز: {ptype}
+- النفحات العليا: {top}
+- النفحات الوسطى: {mid}
+- النفحات الأساسية: {base}
+- الوصف: {desc}
+- رابط Fragrantica: {frag_url}"""
 
-العطر: {product_name}
-السعر: {price:.0f} ر.س{frag_info}
+    extra = ""
+    if extra_info:
+        extra = f"\nمعلومات إضافية: {extra_info}"
 
-التنسيق المطلوب (اتبعه بدقة):
----
-🌟 [اسم العطر الكامل]
+    prompt = f"""اكتب وصفاً احترافياً كاملاً لهذا العطر بتنسيق متجر مهووس:
 
-✨ [جملة تسويقية جذابة بالعربية - سطر واحد]
+**اسم المنتج:** {product_name}
+**السعر:** {price:.0f} ريال سعودي
+{frag_info}{extra}
 
-📝 [فقرة وصف شعري 2-3 جمل تصف رائحة العطر وأجواءه]
+اكتب وصفاً من 1200-1500 كلمة يتضمن الأقسام التسعة التالية:
 
-🌸 مكونات العطر:
-• القمة: [المكونات]
-• القلب: [المكونات]
-• القاعدة: [المكونات]
+## [عنوان المنتج — الكلمة الرئيسية الكاملة]
 
-👤 مناسب لـ: [الجنس] | 🕐 المناسبة: [النهار/المساء/المختلطة]
+[فقرة افتتاحية عاطفية قوية — الكلمة الرئيسية في أول 50 كلمة — دعوة مبكرة للشراء]
 
-💰 السعر: {price:.0f} ر.س
----
-أجب بالعربية فقط."""
+## تفاصيل المنتج
+[نقاط نقطية: الماركة، المصمم، الجنس، العائلة العطرية، الحجم، التركيز، سنة الإصدار]
 
-    txt = _call_gemini(prompt) or _call_openrouter(prompt) or _call_cohere(prompt)
-    return txt or f"🌟 {product_name}\n💰 السعر: {price:.0f} ر.س"
+## رحلة العطر: اكتشف الهرم العطري الفاخر
+[النفحات العليا + الوسطى + الأساسية — وصف حسي عاطفي، ليس مجرد قائمة]
 
-# ══ بحث mahwous.com ══════════════════════════
+## لماذا تختار عطر {product_name}؟
+[4-6 نقاط تبدأ بـ **كلمة مفتاحية بولد** — فوائد لا ميزات]
+
+## متى وأين ترتدي هذا العطر؟
+[الفصول + الأوقات المثالية + المناسبات + الفئة العمرية]
+
+## لمسة خبير من مهووس: تقييمنا الاحترافي
+[تحليل حسي بضمير "نحن" + الأداء بالساعات + مقارنات + توصية + نصيحة عملية]
+
+## الأسئلة الشائعة حول عطر {product_name}
+[6-8 أسئلة حوارية — كل سؤال = كلمة مفتاحية — إجابة 50-80 كلمة]
+
+## اكتشف المزيد من عطور مهووس
+[3-5 روابط داخلية + رابط Fragrantica Arabia]
+
+## عالمك العطري يبدأ من مهووس
+[الكلمة الرئيسية مرتين + تعزيز الثقة + دعوة قوية للشراء]
+
+**ملاحظات مهمة:**
+- لا تستخدم الإيموجي
+- استخدم **Bold** للكلمات المفتاحية
+- الكلمة الرئيسية 5-7 مرات في المجموع
+- أسلوب: راقٍ + ودود + عاطفي + تسويقي
+- اكتب الوصف مباشرة بدون أي شرح أو تعليمات"""
+
+    # Gemini أولاً (مع Grounding إذا أمكن لجلب معلومات إضافية)
+    txt = _call_gemini(prompt, MAHWOUS_EXPERT_SYSTEM, grounding=not bool(frag_info), max_tokens=8192)
+    if not txt:
+        txt = _call_gemini(prompt, MAHWOUS_EXPERT_SYSTEM, grounding=False, max_tokens=8192)
+    if not txt:
+        txt = _call_openrouter(prompt, MAHWOUS_EXPERT_SYSTEM)
+    if not txt:
+        txt = _call_cohere(prompt, MAHWOUS_EXPERT_SYSTEM)
+
+    if txt:
+        return txt
+    return f"## {product_name}\n\nعطر فاخر من الدرجة الأولى متوفر الآن في مهووس.\n\n**السعر:** {price:.0f} ريال سعودي\n\nعالمك العطري يبدأ من مهووس!"
+
+# ══ تحقق منتج + تحديد القسم الصحيح ════════════════════════════════════════
+def verify_match(p1, p2, pr1=0, pr2=0):
+    diff = pr1 - pr2 if pr1 > 0 and pr2 > 0 else 0
+    if pr1 > 0 and pr2 > 0:
+        if diff > 10:     expected = "سعر اعلى"
+        elif diff < -10:  expected = "سعر اقل"
+        else:             expected = "موافق"
+    else:
+        expected = "تحت المراجعة"
+
+    prompt = f"""تحقق من تطابق هذين المنتجين بدقة عالية:
+منتج 1 (مهووس): {p1} | السعر: {pr1:.0f} ريال
+منتج 2 (المنافس): {p2} | السعر: {pr2:.0f} ريال
+فرق السعر: {diff:+.0f} ريال
+تحقق: نفس الماركة؟ نفس اسم العطر؟ نفس الحجم؟ نفس النوع EDP/EDT؟ نفس الجنس؟
+اذا تطابقا: القسم الصحيح = {expected}
+اذا لم يتطابقا: القسم الصحيح = مفقود"""
+
+    sys = PAGE_PROMPTS["verify"]
+    txt = _call_gemini(prompt, sys, temperature=0.1) or _call_openrouter(prompt, sys)
+    if not txt:
+        return {"success":False,"match":False,"confidence":0,"reason":"فشل AI","correct_section":"تحت المراجعة","suggested_price":0}
+    data = _parse_json(txt)
+    if data:
+        sec = data.get("correct_section","")
+        if "اعلى" in sec or "أعلى" in sec: data["correct_section"] = "سعر اعلى"
+        elif "اقل" in sec or "أقل" in sec:  data["correct_section"] = "سعر اقل"
+        elif "موافق" in sec:                 data["correct_section"] = "موافق"
+        elif "مفقود" in sec:                 data["correct_section"] = "مفقود"
+        else: data["correct_section"] = expected if data.get("match") else "مفقود"
+        return {"success":True, **data}
+    match = "true" in txt.lower() or "نعم" in txt
+    return {"success":True,"match":match,"confidence":65,"reason":txt[:200],"correct_section":expected if match else "مفقود","suggested_price":0}
+
+# ══ إعادة تصنيف قسم "تحت المراجعة" ════════════════════════════════════════
+def reclassify_review_items(items):
+    if not items: return []
+    lines = []
+    for i, it in enumerate(items):
+        diff = it.get("our_price",0) - it.get("comp_price",0)
+        lines.append(f"[{i+1}] منتجنا: {it['our']} ({it.get('our_price',0):.0f}ر.س)"
+                     f" vs منافس: {it['comp']} ({it.get('comp_price',0):.0f}ر.س) | فرق: {diff:+.0f}ر.س")
+    prompt = f"""حلل هذه المنتجات وحدد القسم الصحيح لكل منها:
+{chr(10).join(lines)}
+- سعر اعلى: نفس المنتج + سعرنا اعلى بـ10+ ريال
+- سعر اقل: نفس المنتج + سعرنا اقل بـ10+ ريال
+- موافق: نفس المنتج + فرق 10 ريال او اقل
+- مفقود: ليسا نفس المنتج"""
+    sys = PAGE_PROMPTS["reclassify"]
+    txt = _call_gemini(prompt, sys, temperature=0.1) or _call_openrouter(prompt, sys)
+    if not txt: return []
+    data = _parse_json(txt)
+    if data and "results" in data:
+        for r in data["results"]:
+            sec = r.get("section","")
+            if "اعلى" in sec or "أعلى" in sec: r["section"] = "🔴 سعر أعلى"
+            elif "اقل" in sec or "أقل" in sec:  r["section"] = "🟢 سعر أقل"
+            elif "موافق" in sec:                 r["section"] = "✅ موافق"
+            elif "مفقود" in sec:                 r["section"] = "🔵 مفقود"
+            else:                                 r["section"] = "⚠️ تحت المراجعة"
+        return data["results"]
+    return []
+
+# ══ بحث أسعار السوق ══════════════════════════════════════════════════════
+def search_market_price(product_name, our_price=0):
+    ddg = _search_ddg(f"سعر {product_name} السعودية 2025")
+    web_ctx = "\n".join(f"- {r['snippet'][:100]}" for r in ddg[:3]) if ddg else ""
+    prompt = f"""ابحث عن سعر السوق السعودي الحالي لهذا العطر:
+العطر: {product_name} | سعرنا: {our_price:.0f} ريال
+{f"معلومات:{chr(10)}{web_ctx}" if web_ctx else ""}
+اريد: متوسط السعر + نطاق الاسعار + اسماء المنافسين + توصية"""
+    sys = PAGE_PROMPTS["market_search"]
+    txt = _call_gemini(prompt, sys, grounding=True)
+    if not txt: txt = _call_gemini(prompt, sys)
+    if not txt: txt = _call_openrouter(prompt, sys)
+    if not txt: return {"success":False,"market_price":0}
+    data = _parse_json(txt)
+    if data:
+        data["web_context"] = web_ctx
+        return {"success":True, **data}
+    return {"success":True,"market_price":our_price,"recommendation":txt[:400],"web_context":web_ctx}
+
+# ══ تحليل عميق ══════════════════════════════════════════════════════════════
+def ai_deep_analysis(our_product, our_price, comp_product, comp_price, section="general", brand=""):
+    diff = our_price - comp_price if our_price > 0 and comp_price > 0 else 0
+    diff_pct = (abs(diff)/comp_price*100) if comp_price > 0 else 0
+    ddg = _search_ddg(f"سعر {our_product} السعودية")
+    web_ctx = "\n".join(f"- {r['snippet'][:80]}" for r in ddg[:2]) if ddg else ""
+    guidance = {
+        "🔴 سعر أعلى": f"سعرنا اعلى بـ{diff:.0f}ريال ({diff_pct:.1f}%). هل يجب خفضه؟",
+        "🟢 سعر أقل":  f"سعرنا اقل بـ{abs(diff):.0f}ريال ({diff_pct:.1f}%). كم يمكن رفعه؟",
+        "✅ موافق":     "السعر تنافسي. هل نحافظ عليه؟",
+        "⚠️ تحت المراجعة": "المطابقة غير مؤكدة. هل هما نفس المنتج؟",
+    }.get(section, "")
+    prompt = f"""تحليل تسعير عميق:
+منتجنا: {our_product} | سعرنا: {our_price:.0f} ريال
+المنافس: {comp_product} | سعره: {comp_price:.0f} ريال
+الفرق: {diff:+.0f} ريال | {diff_pct:.1f}% | {guidance}
+{f"معلومات السوق:{chr(10)}{web_ctx}" if web_ctx else ""}
+اجب بتقرير مختصر: هل المطابقة صحيحة؟ السعر المقترح بالرقم؟ الاجراء الفوري؟"""
+    txt = _call_gemini(prompt, grounding=bool(web_ctx)) or _call_openrouter(prompt)
+    if txt: return {"success":True,"response":txt,"source":"Gemini" + (" + ويب" if web_ctx else "")}
+    return {"success":False,"response":"فشل التحليل"}
+
+# ══ بحث mahwous.com ══════════════════════════════════════════════════════════
 def search_mahwous(product_name):
-    prompt = f"""هل العطر «{product_name}» متوفر في متجر مهووس؟
-أجب JSON: {{"likely_available":true/false,"confidence":0-100,
-"similar_products":[],"add_recommendation":"عالية/متوسطة/منخفضة",
-"reason":"سبب مختصر","suggested_price":0}}"""
+    ddg = _search_ddg(f"site:mahwous.com {product_name}")
+    web_ctx = "\n".join(r["snippet"][:100] for r in ddg[:2]) if ddg else ""
+    prompt = f"""هل العطر {product_name} متوفر في متجر مهووس؟
+{f"نتائج:{chr(10)}{web_ctx}" if web_ctx else ""}
+اجب JSON: {{"likely_available":true/false,"confidence":0-100,"similar_products":[],
+"add_recommendation":"عالية/متوسطة/منخفضة","reason":"","suggested_price":0}}"""
     txt = _call_gemini(prompt, grounding=True) or _call_gemini(prompt)
     if not txt: return {"success":False}
-    try:
-        clean = re.sub(r'```json|```','',txt).strip()
-        s=clean.find('{'); e=clean.rfind('}')+1
-        if s>=0 and e>s:
-            return {"success":True, **json.loads(clean[s:e])}
-    except: pass
+    data = _parse_json(txt)
+    if data: return {"success":True, **data}
     return {"success":True,"likely_available":False,"confidence":50,"reason":txt[:150]}
 
-# ══ تحقق مكرر ═══════════════════════════════
+# ══ تحقق مكرر ════════════════════════════════════════════════════════════════
 def check_duplicate(product_name, our_products):
-    if not our_products:
-        return {"success":True,"response":"لا توجد بيانات للمقارنة"}
-    sample = our_products[:30]
-    prompt = f"""هل العطر «{product_name}» موجود بشكل مشابه في هذه القائمة؟
-القائمة: {', '.join(str(p) for p in sample)}
-أجب: نعم (وذكر أقرب مطابقة) أو لا."""
-    r = call_ai(prompt, "missing")
-    return r
+    if not our_products: return {"success":True,"response":"لا توجد بيانات"}
+    prompt = f"""هل العطر {product_name} موجود بشكل مشابه في هذه القائمة؟
+القائمة: {', '.join(str(p) for p in our_products[:30])}
+اجب: نعم (وذكر اقرب مطابقة) او لا مع السبب."""
+    return call_ai(prompt, "missing")
 
-# ══ تحليل مجمع ══════════════════════════════
+# ══ تحليل مجمع ════════════════════════════════════════════════════════════════
 def bulk_verify(items, section="general"):
     if not items: return {"success":False,"response":"لا توجد منتجات"}
     lines = "\n".join(
-        f"{i+1}. {it.get('our','')} ↔ {it.get('comp','')} | "
+        f"{i+1}. {it.get('our','')} vs {it.get('comp','')} | "
         f"سعرنا: {it.get('our_price',0):.0f} | منافس: {it.get('comp_price',0):.0f} | "
         f"فرق: {it.get('our_price',0)-it.get('comp_price',0):+.0f}"
-        for i,it in enumerate(items)
-    )
-    _section_instructions = {
-        "price_raise": "سعرنا أعلى. لكل منتج: 1.هل المطابقة صحيحة؟ 2.هل نخفض السعر؟ 3.السعر المقترح. رتّبهم من الأعلى فرقاً للأقل.",
-        "price_lower": "سعرنا أقل = ربح ضائع. لكل منتج: 1.هل يمكن رفع السعر؟ 2.السعر الأمثل (أقل من المنافس بـ5-15). 3.الربح المتوقع.",
-        "review": "هذه مطابقات غير مؤكدة. لكل منتج: هل هما نفس العطر فعلاً؟ ✅ نعم / ❌ لا / ⚠️ غير متأكد. اشرح السبب.",
-        "approved": "هذه منتجات موافق عليها. راجعها وتأكد أنها لا تزال تنافسية.",
+        for i,it in enumerate(items))
+    instructions = {
+        "price_raise": "سعرنا اعلى. لكل منتج: هل المطابقة صحيحة؟ هل نخفض؟ السعر المقترح.",
+        "price_lower": "سعرنا اقل = ربح ضائع. لكل منتج: هل يمكن رفعه؟ السعر الامثل.",
+        "review": "مطابقات غير مؤكدة. لكل منتج: هل هما نفس العطر فعلا؟ نعم/لا/غير متاكد.",
+        "approved": "منتجات موافق عليها. راجعها وتاكد انها لا تزال تنافسية.",
     }
-    instruction = _section_instructions.get(section, "حلّل وأعطِ توصية لكل منتج.")
-    prompt = f"{instruction}\n\nالمنتجات:\n{lines}"
+    prompt = f"{instructions.get(section,'حلل واعط توصية.')}\n\nالمنتجات:\n{lines}"
     return call_ai(prompt, section)
 
-# ══ معالجة النص الملصوق ═════════════════════
+# ══ معالجة النص الملصوق ═══════════════════════════════════════════════════
 def analyze_paste(text, context=""):
-    """تحليل نص ملصوق من Excel أو أي مصدر"""
-    prompt = f"""المستخدم لصق هذا النص:{chr(10) + context if context else ''}
-
+    prompt = f"""المستخدم لصق هذا النص:
 ---
 {text[:5000]}
 ---
-
-حلّل هذا النص واستخرج:
-1. هل هو قائمة منتجات؟ إذا نعم، اعرضها بشكل منظم
-2. إذا كانت أسعار، حللها وقارنها
-3. إذا كانت أوامر، نفذها وأخبر بالنتيجة
-4. أعطِ توصيات مفيدة بناءً على البيانات
-أجب بالعربية بشكل منظم."""
+حلل واستخرج: قائمة منتجات؟ اسعار؟ اوامر؟ اعط توصيات مفيدة. اجب بالعربية منظم."""
     return call_ai(prompt, "general")
 
-# ══ دوال متوافقة مع app.py القديم ══════════
+# ══ دوال متوافقة مع app.py ════════════════════════════════════════════════
 def chat_with_ai(msg, history=None, ctx=""): return gemini_chat(msg, history, ctx)
-def analyze_product(p, price=0): return call_ai(f"حلّل: {p} ({price:.0f}ر.س)", "general")
-def suggest_price(p, comp_price): return call_ai(f"اقترح سعراً لـ {p} بدلاً من {comp_price:.0f}ر.س", "general")
+def analyze_product(p, price=0): return call_ai(f"حلل: {p} ({price:.0f}ريال)", "general")
+def suggest_price(p, comp_price): return call_ai(f"اقترح سعرا لـ {p} بدلا من {comp_price:.0f}ريال", "general")
 def process_paste(text): return analyze_paste(text)
