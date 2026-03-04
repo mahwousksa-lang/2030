@@ -107,11 +107,15 @@ def diagnose_ai_providers() -> dict:
     # ── Cohere ────────────────────────────────────────────────────────────
     if COHERE_API_KEY:
         try:
-            r = requests.post("https://api.cohere.ai/v1/generate", json={
-                "model": "command-r-plus", "prompt": "test", "max_tokens": 5
-            }, headers={"Authorization": f"Bearer {COHERE_API_KEY}"}, timeout=15)
+            r = requests.post("https://api.cohere.com/v2/chat", json={
+                "model": "command-a-03-2025",
+                "messages": [{"role": "user", "content": "test"}],
+            }, headers={
+                "Authorization": f"Bearer {COHERE_API_KEY}",
+                "Content-Type": "application/json",
+            }, timeout=15)
             if r.status_code == 200:
-                results["cohere"] = "✅ يعمل"
+                results["cohere"] = "✅ يعمل (command-a-03-2025)"
             elif r.status_code == 401:
                 results["cohere"] = "❌ 401 — مفتاح Cohere غير صحيح"
             elif r.status_code == 402:
@@ -121,7 +125,7 @@ def diagnose_ai_providers() -> dict:
                 except: msg = r.text[:100]
                 results["cohere"] = f"❌ {r.status_code} — {msg[:80]}"
         except requests.exceptions.ConnectionError:
-            results["cohere"] = "❌ لا اتصال بـ api.cohere.ai"
+            results["cohere"] = "❌ لا اتصال بـ api.cohere.com"
         except Exception as e:
             results["cohere"] = f"❌ {str(e)[:80]}"
     else:
@@ -339,25 +343,44 @@ def _call_cohere(prompt, system=""):
     if not COHERE_API_KEY:
         return None
     try:
-        full = f"{system}\n\n{prompt}" if system else prompt
-        r = requests.post(_CO, json={
-            "model": "command-r-plus", "prompt": full,
-            "max_tokens": 4096, "temperature": 0.3
-        }, headers={"Authorization": f"Bearer {COHERE_API_KEY}"}, timeout=35)
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        r = requests.post(
+            "https://api.cohere.com/v2/chat",
+            json={
+                "model": "command-a-03-2025",
+                "messages": messages,
+                "temperature": 0.3,
+            },
+            headers={
+                "Authorization": f"Bearer {COHERE_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            timeout=45
+        )
         if r.status_code == 200:
-            return r.json().get("generations",[{}])[0].get("text","")
+            data = r.json()
+            # v2 response structure
+            return data.get("message", {}).get("content", [{}])[0].get("text", "")
         elif r.status_code == 401:
             _log_err("Cohere", "مفتاح غير صحيح (401)")
         elif r.status_code == 402:
             _log_err("Cohere", "رصيد منتهٍ (402)")
+        elif r.status_code == 429:
+            _log_err("Cohere", "Rate Limit (429)")
         else:
-            try: msg = r.json().get("message","")
-            except: msg = r.text[:80]
+            try:
+                msg = r.json().get("message", "")
+            except Exception:
+                msg = r.text[:100]
             _log_err("Cohere", f"{r.status_code} — {msg[:80]}")
     except requests.exceptions.ConnectionError as e:
         _log_err("Cohere", f"لا اتصال — {str(e)[:80]}")
     except requests.exceptions.Timeout:
-        _log_err("Cohere", "Timeout (35s)")
+        _log_err("Cohere", "Timeout (45s)")
     except Exception as e:
         _log_err("Cohere", f"{str(e)[:80]}")
     return None
