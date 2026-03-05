@@ -950,12 +950,12 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True):
 # ═══════════════════════════════════════════════════════
 def find_missing_products(our_df, comp_dfs):
     """
-    يكشف المنتجات المفقودة مع تجنب التكرار بدقة عالية:
-    - 5 خوارزميات تشابه مدمجة
-    - مقارنة ثنائية الاتجاه (المنافس ← منتجاتنا + خط الإنتاج)
-    - كشف الأسماء العربية والإنجليزية المتكافئة
-    - عقوبات الحجم / النوع / الجنس / خط الإنتاج
-    - حد أدنى للثقة: 82% بعد العقوبات
+    v26 — كشف المنتجات المفقودة الفائق الدقة:
+    ✅ 5 خوارزميات تشابه + مطابقة بالكلمات
+    ✅ كشف تستر↔أساسي (badge) — لا ضياع فرص
+    ✅ تطبيع شامل للأسماء العربية والإنجليزية
+    ✅ حد ثقة مزدوج: موجود(82%) / مشابه(68%)
+    ✅ منع التكرار من منافسين مختلفين
     """
     our_col = _fcol(our_df, ["المنتج","اسم المنتج","Product","Name","name"])
 
@@ -964,183 +964,201 @@ def find_missing_products(our_df, comp_dfs):
     for _, r in our_df.iterrows():
         name = str(r.get(our_col, "")).strip()
         if not name or is_sample(name): continue
-        brand = extract_brand(name)
-        norm  = normalize(name)
-        pline = extract_product_line(name, brand)
+        brand  = extract_brand(name)
+        norm   = normalize(name)
+        pline  = extract_product_line(name, brand)
+        is_t   = is_tester(name)
+        # نسخة مُجرَّدة من "تستر" للمقارنة مع الأساسي
+        bare_n = re.sub(r"\btester\b","", norm).strip()
         our_items.append({
-            "raw":    name,
-            "norm":   norm,
-            "brand":  brand,
-            "pline":  pline,
-            "size":   extract_size(name),
-            "type":   extract_type(name),
-            "gender": extract_gender(name),
-            # نسخة مبسطة جداً: بدون كلمات الحجم والنوع
-            "bare":   re.sub(r'\b\d+\s*(?:ml|مل)\b','',norm).strip(),
+            "raw":      name,
+            "norm":     norm,
+            "bare":     bare_n,
+            "brand":    brand,
+            "pline":    pline,
+            "size":     extract_size(name),
+            "type":     extract_type(name),
+            "gender":   extract_gender(name),
+            "is_tester": is_t,
         })
 
+    # ── فهرس سريع بالكلمات ──────────────────────────────────────────────
+    _word_idx = {}
+    for p in our_items:
+        for w in set(p["bare"].split()):
+            if len(w) >= 4:
+                _word_idx.setdefault(w, []).append(p)
+
+    def _word_overlap(a, b):
+        sa = set(a.split()); sb = set(b.split())
+        if not sa or not sb: return 0
+        return len(sa & sb) / len(sa | sb) * 100
+
     def _score_pair(cn, on, c_pline, o_pline):
-        """
-        5 خوارزميات مدمجة لأعلى دقة ممكنة:
-        1. token_sort_ratio   — يتجاهل ترتيب الكلمات
-        2. token_set_ratio    — يتجاهل الكلمات الزائدة
-        3. partial_ratio      — مقارنة جزئية (اسم قصير داخل اسم طويل)
-        4. Indel distance     — تسلسل الأحرف (قوي مع الأسماء المُهجَّأة)
-        5. product_line ratio — مقارنة خط الإنتاج فقط
-        """
         s1 = fuzz.token_sort_ratio(cn, on)
         s2 = fuzz.token_set_ratio(cn, on)
         s3 = fuzz.partial_ratio(cn, on)
-        # Indel: يقيس التشابه الحرفي التسلسلي (مفيد لـ "sauvage" ↔ "سوفاج")
-        try:
-            s4 = 100 - Indel.normalized_distance(cn, on) * 100
-        except:
-            s4 = 0
-        # خط الإنتاج فقط
+        try:    s4 = 100 - Indel.normalized_distance(cn, on) * 100
+        except: s4 = 0
         s5 = fuzz.token_set_ratio(c_pline, o_pline) if (c_pline and o_pline) else 0
+        base = s1*0.25 + s2*0.35 + s3*0.20 + s4*0.10 + (s5*0.10 if s5 else 0)
+        return base, s2, s5
 
-        # الجمع الموزون: نفضّل token_set لأنه الأقوى مع الأسماء الطويلة
-        base = s1 * 0.25 + s2 * 0.35 + s3 * 0.20 + s4 * 0.10 + (s5 * 0.10 if s5 else 0)
-        return base, s2, s5  # base, set_score, pline_score
+    def _get_candidates(bare_cn):
+        """فهرس الكلمات للبحث السريع ثم fuzzy للترتيب"""
+        seen = {}
+        for w in set(bare_cn.split()):
+            if len(w) >= 4 and w in _word_idx:
+                for p in _word_idx[w]:
+                    seen[id(p)] = p
+        return list(seen.values()) if seen else our_items[:200]
 
-    def _is_same_product(cp_raw, cn, c_brand, c_pline, c_size, c_type, c_gender):
+    def _is_same_product(cp_raw, cn, c_brand, c_pline, c_size, c_type, c_gender, c_is_tester):
         """
-        يتحقق إذا كان منتج المنافس موجوداً لدينا.
-        يُعيد (bool, float_score, str_reason)
+        يُعيد: (found, score, reason, variant_info)
+        variant_info = None | {"type":"tester"|"base","product":p,"score":float}
         """
-        # تحديد مرشحينا حسب الماركة
-        if c_brand:
-            c_brand_n = normalize(c_brand)
-            pool = [o for o in our_items
-                    if not o["brand"] or normalize(o["brand"]) == c_brand_n]
-            # إذا لم نجد بالماركة الصارمة، نفتح البحث (ماركة غير محددة لدينا)
-            if not pool:
-                pool = [o for o in our_items if not o["brand"]]
-        else:
-            pool = our_items
+        bare_cn = re.sub(r"\btester\b", "", cn).strip()
+        c_brand_n = normalize(c_brand) if c_brand else ""
 
-        if not pool:
-            return False, 0, "لا يوجد مرشحون"
+        # فرز المرشحين: نفس الماركة أولاً
+        candidates = _get_candidates(bare_cn)
+        if c_brand_n:
+            priority = [p for p in candidates if normalize(p["brand"]) == c_brand_n]
+            others   = [p for p in candidates if normalize(p["brand"]) != c_brand_n]
+            candidates = priority + others[:50]
 
-        best_score = 0
-        best_reason = ""
+        best_same   = (0, None, "")
+        best_variant= (0, None, "")   # تستر ↔ أساسي
 
-        for o in pool:
-            # ── 1. حساب الدرجة الخام ──────────────────────────────────
-            base, set_sc, pline_sc = _score_pair(cn, o["norm"], c_pline, o["pline"])
+        for p in candidates[:300]:
+            o_bare = p["bare"]
+            base, set_sc, pline_sc = _score_pair(bare_cn, o_bare, c_pline, p["pline"])
 
-            # ── 2. عقوبات المواصفات الجوهرية ─────────────────────────
+            # ── عقوبات ──────────────────────────────────────────────
             penalty = 0
-
-            # الحجم (عقوبة متدرجة)
-            if c_size > 0 and o["size"] > 0:
-                size_diff = abs(c_size - o["size"])
-                if size_diff > 50:   penalty += 35
-                elif size_diff > 20: penalty += 22
-                elif size_diff > 8:  penalty += 12
-
-            # النوع EDP/EDT (عقوبة متوسطة — قد يكون نفس العطر بتركيزين)
-            if c_type and o["type"] and c_type != o["type"]:
-                penalty += 12
-
-            # الجنس (عقوبة حرجة — رجالي ≠ نسائي)
-            if c_gender and o["gender"] and c_gender != o["gender"]:
-                penalty += 40  # رفض شبه نهائي
-
-            # خط الإنتاج المختلف (عقوبة جوهرية)
-            if c_pline and o["pline"]:
-                pl_s = fuzz.token_sort_ratio(c_pline, o["pline"])
-                if pl_s < 60:    penalty += 30  # "hero" ≠ "london"
-                elif pl_s < 75:  penalty += 18
-                elif pl_s < 88:  penalty += 8
-
-            # ── 3. مكافأة التطابق الماركة ─────────────────────────────
-            if c_brand and o["brand"]:
-                if normalize(c_brand) == normalize(o["brand"]):
-                    base += 5  # مكافأة صغيرة على تطابق الماركة
+            if c_size > 0 and p["size"] > 0:
+                d = abs(c_size - p["size"])
+                if d > 50: penalty += 35
+                elif d > 20: penalty += 22
+                elif d > 8:  penalty += 12
+            if c_type and p["type"] and c_type != p["type"]: penalty += 12
+            if c_gender and p["gender"] and c_gender != p["gender"]: penalty += 40
+            if c_pline and p["pline"]:
+                pl = fuzz.token_sort_ratio(c_pline, p["pline"])
+                if pl < 60: penalty += 30
+                elif pl < 75: penalty += 18
+                elif pl < 88: penalty += 8
+            if c_brand_n and p["brand"] and normalize(p["brand"]) == c_brand_n:
+                base += 5
 
             final = max(0, min(100, base - penalty))
 
-            # ── 4. حفظ الأفضل ─────────────────────────────────────────
-            if final > best_score:
-                best_score = final
-                _match_note = f"يشبه «{o['raw'][:50]}» بدرجة {final:.0f}%"
-                best_reason = _match_note
+            # هل نفس النوع (كلاهما تستر أو كلاهما أساسي)؟
+            same_type = (p["is_tester"] == c_is_tester)
 
-            # إذا وجدنا تطابقاً قوياً جداً → توقف فوري
-            if final >= 95:
-                return True, final, best_reason
+            if same_type:
+                if final > best_same[0]:
+                    best_same = (final, p, f"يشبه «{p['raw'][:50]}» ({final:.0f}%)")
+                if final >= 95:
+                    return True, final, best_same[2], None
+            else:
+                if final > best_variant[0]:
+                    best_variant = (final, p, f"{'تستر' if p['is_tester'] else 'العطر الأساسي'}")
 
-        # ── 5. حد القرار ──────────────────────────────────────────────
-        # 82% = حد التطابق المؤكد (بعد العقوبات)
-        # 70-81% = منطقة رمادية → نضع علامة "مشابه" لكن نُدرجه كمفقود
-        CONFIRMED_THRESHOLD = 82
-        SIMILAR_THRESHOLD   = 70
+        # ── قرار النوع المطابق ────────────────────────────────────────
+        CONFIRMED = 82; SIMILAR = 68
 
-        if best_score >= CONFIRMED_THRESHOLD:
-            return True, best_score, best_reason
-        elif best_score >= SIMILAR_THRESHOLD:
-            # قد يكون مكرراً — أضف ملاحظة لكن لا تستبعده
-            return False, best_score, f"⚠️ مشابه ({best_score:.0f}%) — {best_reason}"
-        else:
-            return False, best_score, ""
+        if best_same[0] >= CONFIRMED:
+            return True, best_same[0], best_same[2], None
+        if best_same[0] >= SIMILAR:
+            # منطقة رمادية → مفقود لكن مع تحذير
+            vinfo = {"type": "similar",
+                     "product": best_same[1]["raw"] if best_same[1] else "",
+                     "score": best_same[0]} if best_same[1] else None
+            return False, best_same[0], f"⚠️ مشابه ({best_same[0]:.0f}%) — {best_same[2]}", vinfo
+
+        # ── كشف التستر/الأساسي ───────────────────────────────────────
+        variant_info = None
+        if best_variant[0] >= 62 and best_variant[1]:
+            p_var  = best_variant[1]
+            v_type = "tester" if p_var["is_tester"] else "base"
+            variant_info = {
+                "type":    v_type,
+                "label":   "🏷️ يتوفر لدينا تستر منه" if v_type == "tester" else "✅ يتوفر لدينا العطر الأساسي",
+                "product": p_var["raw"],
+                "score":   best_variant[0],
+            }
+
+        return False, best_same[0], "", variant_info
 
     # ── البحث الرئيسي ─────────────────────────────────────────────────
     missing = []
-    seen_norm = set()  # لمنع تكرار نفس المنتج من منافسين مختلفين
+    seen_bare = set()
 
     for cname, cdf in comp_dfs.items():
         ccol = _fcol(cdf, ["المنتج","اسم المنتج","Product","Name","name"])
         icol = _fcol(cdf, [
             "رقم المنتج","معرف المنتج","المعرف","معرف","رقم_المنتج","معرف_المنتج",
             "product_id","Product ID","Product_ID","ID","id","Id",
-            "SKU","sku","Sku","رمز المنتج","رمز_المنتج","رمز المنتج sku",
+            "SKU","sku","Sku","رمز المنتج","رمز_المنتج",
             "الكود","كود","Code","code","الرقم","رقم","Barcode","barcode","الباركود"
         ])
 
         for _, row in cdf.iterrows():
             cp = str(row.get(ccol, "")).strip()
-            if not cp or is_sample(cp) or is_tester(cp): continue
+            if not cp or is_sample(cp): continue
+
             cn = normalize(cp)
-            if not cn or cn in seen_norm: continue
+            if not cn: continue
 
-            c_brand  = extract_brand(cp)
-            c_pline  = extract_product_line(cp, c_brand)
-            c_size   = extract_size(cp)
-            c_type   = extract_type(cp)
-            c_gender = extract_gender(cp)
+            # مفتاح إزالة التكرار: بدون كلمة تستر
+            bare_ck = re.sub(r"\btester\b", "", cn).strip()
+            if bare_ck in seen_bare: continue
 
-            # ── التحقق من الوجود ──────────────────────────────────────
-            found, score, reason = _is_same_product(
-                cp, cn, c_brand, c_pline, c_size, c_type, c_gender)
+            c_brand   = extract_brand(cp)
+            c_pline   = extract_product_line(cp, c_brand)
+            c_size    = extract_size(cp)
+            c_type    = extract_type(cp)
+            c_gender  = extract_gender(cp)
+            c_is_t    = is_tester(cp)
+
+            found, score, reason, variant = _is_same_product(
+                cp, cn, c_brand, c_pline, c_size, c_type, c_gender, c_is_t)
 
             if found:
-                # موجود لدينا → تخطي
-                continue
+                continue  # موجود لدينا بنفس النوع → تخطي
 
-            # منتج مفقود حقيقي
-            seen_norm.add(cn)
+            seen_bare.add(bare_ck)
+
             entry = {
-                "منتج_المنافس": cp,
-                "معرف_المنافس": _pid(row, icol),
-                "سعر_المنافس":  _price(row),
-                "المنافس":      cname,
-                "الماركة":      c_brand,
-                "الحجم":        f"{int(c_size)}ml" if c_size else "",
-                "النوع":        c_type,
-                "الجنس":        c_gender,
-                "تاريخ_الرصد":  datetime.now().strftime("%Y-%m-%d"),
+                "منتج_المنافس":  cp,
+                "معرف_المنافس":  _pid(row, icol),
+                "سعر_المنافس":   _price(row),
+                "المنافس":       cname,
+                "الماركة":       c_brand,
+                "الحجم":         f"{int(c_size)}ml" if c_size else "",
+                "النوع":         c_type,
+                "الجنس":         c_gender,
+                "هو_تستر":       c_is_t,
+                "تاريخ_الرصد":   datetime.now().strftime("%Y-%m-%d"),
+                "ملاحظة":        reason if reason and "⚠️" in reason else "",
             }
-            # إذا كان مشابهاً (منطقة رمادية) → أضف ملاحظة للمراجعة
-            if reason and "⚠️" in reason:
-                entry["ملاحظة"] = reason
+
+            # إضافة معلومات النوع المتاح (تستر/أساسي)
+            if variant:
+                entry["نوع_متاح"]       = variant.get("label","")
+                entry["منتج_متاح"]      = variant.get("product","")
+                entry["نسبة_التشابه"]   = round(variant.get("score", 0), 1)
+            else:
+                entry["نوع_متاح"]       = ""
+                entry["منتج_متاح"]      = ""
+                entry["نسبة_التشابه"]   = 0.0
+
             missing.append(entry)
 
     return pd.DataFrame(missing) if missing else pd.DataFrame()
 
-# ═══════════════════════════════════════════════════════
-#  تصدير Excel ملوّن
-# ═══════════════════════════════════════════════════════
 def export_excel(df, sheet_name="النتائج"):
     from openpyxl.styles import PatternFill, Font, Alignment
     from openpyxl.utils import get_column_letter
