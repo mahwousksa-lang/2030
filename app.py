@@ -18,6 +18,15 @@ import time
 import uuid
 from datetime import datetime
 
+try:
+    from streamlit.runtime.scriptrunner import add_script_run_ctx
+except ImportError:
+    # نسخ قديمة من Streamlit
+    try:
+        from streamlit.scriptrunner import add_script_run_ctx
+    except ImportError:
+        def add_script_run_ctx(t): return t  # fallback آمن
+
 from config import *
 from styles import get_styles, stat_card, vs_card
 from engines.engine import (read_file, run_full_analysis, find_missing_products,
@@ -641,12 +650,32 @@ with st.sidebar:
                 except:
                     st.warning(f"❌ {key_name} غير موجود")
 
-    # حالة المعالجة
+    # حالة المعالجة — تحديث حي مع auto-rerun
     if st.session_state.job_id:
         job = get_job_progress(st.session_state.job_id)
-        if job and job["status"] == "running":
-            pct = job["processed"] / max(job["total"], 1)
-            st.progress(pct, f"⚙️ {job['processed']}/{job['total']} منتج")
+        if job:
+            if job["status"] == "running":
+                pct = job["processed"] / max(job["total"], 1)
+                st.progress(min(pct, 0.99),
+                            f"⚙️ {job['processed']}/{job['total']} منتج")
+                # أعد تحميل الصفحة كل 3 ثوانٍ لتحديث الشريط
+                time.sleep(3)
+                st.rerun()
+            elif job["status"] == "done" and st.session_state.job_running:
+                # اكتمل — حمّل النتائج تلقائياً
+                if job.get("results"):
+                    df_all = pd.DataFrame(job["results"])
+                    missing_df = pd.DataFrame(job.get("missing", [])) if job.get("missing") else pd.DataFrame()
+                    _r = _split_results(df_all)
+                    _r["missing"] = missing_df
+                    st.session_state.results     = _r
+                    st.session_state.analysis_df = df_all
+                st.session_state.job_running = False
+                st.balloons()
+                st.rerun()
+            elif job["status"].startswith("error"):
+                st.error(f"❌ فشل: {job['status'][7:80]}")
+                st.session_state.job_running = False
 
     page = st.radio("الأقسام", SECTIONS, label_visibility="collapsed")
 
@@ -819,40 +848,13 @@ elif page == "📂 رفع الملفات":
                                   our_file.name, comp_names),
                             daemon=True
                         )
+                        # ربط الثريد بسياق Streamlit — يمنع توقف المعالجة
+                        add_script_run_ctx(t)
                         t.start()
                         st.session_state.job_running = True
                         st.success(f"✅ بدأ التحليل في الخلفية (Job: {job_id})")
-                        st.info("🔄 تابع التقدم من لوحة التحكم أو انتظر هنا")
-
-                        # polling
-                        progress_bar = st.progress(0, "جاري التحليل...")
-                        for _ in range(300):  # max 5 دقائق
-                            time.sleep(2)
-                            job = get_job_progress(job_id)
-                            if job:
-                                pct = job["processed"] / max(job["total"], 1)
-                                progress_bar.progress(
-                                    min(pct, 0.99),
-                                    f"⚙️ {job['processed']}/{job['total']} منتج"
-                                )
-                                if job["status"] == "done":
-                                    break
-                                elif job["status"].startswith("error"):
-                                    st.error(f"❌ {job['status']}")
-                                    break
-
-                        job = get_job_progress(job_id)
-                        if job and job["status"] == "done" and job.get("results"):
-                            df_all = pd.DataFrame(job["results"])
-                            missing_df = pd.DataFrame(job.get("missing", [])) if job.get("missing") else pd.DataFrame()
-                            _r = _split_results(df_all)
-                            _r["missing"] = missing_df
-                            st.session_state.results       = _r
-                            st.session_state.analysis_df   = df_all
-                            st.session_state.job_running   = False
-                            progress_bar.progress(1.0, "✅ اكتمل!")
-                            st.balloons()
-                            st.rerun()
+                        # انتقل فوراً للوحة التحكم لمتابعة التقدم بشريط حي
+                        st.rerun()
                     else:
                         # ── مباشر ──
                         prog = st.progress(0, "جاري التحليل...")
