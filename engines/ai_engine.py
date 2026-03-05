@@ -12,7 +12,7 @@ engines/ai_engine.py v24.0 — خبير مهووس الكامل
 import requests, json, re, time, traceback
 from config import GEMINI_API_KEYS, OPENROUTER_API_KEY, COHERE_API_KEY
 
-_GM  = "gemini-1.5-flash"
+_GM  = "gemini-1.5-flash-latest"  # ← النموذج المستقر الموصى به
 _GU  = f"https://generativelanguage.googleapis.com/v1beta/models/{_GM}:generateContent"
 _OR  = "https://openrouter.ai/api/v1/chat/completions"
 _CO  = "https://api.cohere.ai/v1/generate"
@@ -76,7 +76,7 @@ def diagnose_ai_providers() -> dict:
     if OPENROUTER_API_KEY:
         try:
             r = requests.post(_OR, json={
-                "model": "google/gemini-2.0-flash-exp:free",
+                "model": "google/gemini-1.5-flash-latest",  # ← مستقر
                 "messages": [{"role":"user","content":"test"}],
                 "max_tokens": 5
             }, headers={
@@ -207,8 +207,8 @@ def _call_gemini(prompt, system="", grounding=False, temperature=0.3, max_tokens
                     reason = data.get("promptFeedback",{}).get("blockReason","")
                     _log_err("Gemini", f"مفتاح {i+1}: لا نتائج — {reason}")
             elif r.status_code == 429:
-                _log_err("Gemini", f"مفتاح {i+1}: Rate Limit (429)")
-                time.sleep(1)
+                _log_err("Gemini", f"مفتاح {i+1}: Rate Limit (429) — انتظار 2 ثانية")
+                time.sleep(2)  # ← 2 ثانية للـ 429
                 continue
             elif r.status_code == 403:
                 _log_err("Gemini", f"مفتاح {i+1}: IP محظور أو مفتاح غير مصرح (403)")
@@ -233,9 +233,9 @@ def _call_openrouter(prompt, system=""):
         return None
 
     # نماذج مجانية صحيحة (محدَّثة مارس 2026)
+    # نماذج مستقرة فقط — بدون النماذج التجريبية (exp)
     FREE_MODELS = [
         "meta-llama/llama-3.3-70b-instruct:free",
-        "google/gemini-2.0-flash-exp:free",
         "deepseek/deepseek-chat-v3-0324:free",
         "mistralai/mistral-7b-instruct:free",
         "qwen/qwen-2.5-72b-instruct:free",
@@ -265,8 +265,8 @@ def _call_openrouter(prompt, system=""):
                 if content and content.strip():
                     return content
             elif r.status_code == 429:
-                _log_err("OpenRouter", f"{model}: Rate Limit (429)")
-                time.sleep(1)
+                _log_err("OpenRouter", f"{model}: Rate Limit (429) — انتظار 2 ثانية")
+                time.sleep(2)  # ← 2 ثانية للـ 429
                 continue
             elif r.status_code == 402:
                 _log_err("OpenRouter", f"{model}: رصيد منتهٍ (402) — جرب النموذج التالي")
@@ -295,6 +295,10 @@ def _call_openrouter(prompt, system=""):
     return None
 
 def _call_cohere(prompt, system=""):
+    """
+    Cohere — Fallback صامت فقط.
+    أي خطأ (401/402/429/...) يُسجَّل ويُعاد None بدون إيقاف سير العمل.
+    """
     if not COHERE_API_KEY:
         return None
     try:
@@ -305,39 +309,30 @@ def _call_cohere(prompt, system=""):
 
         r = requests.post(
             "https://api.cohere.com/v2/chat",
-            json={
-                "model": "command-a-03-2025",
-                "messages": messages,
-                "temperature": 0.3,
-            },
-            headers={
-                "Authorization": f"Bearer {COHERE_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            timeout=45
+            json={"model": "command-r-plus", "messages": messages, "temperature": 0.3},
+            headers={"Authorization": f"Bearer {COHERE_API_KEY}",
+                     "Content-Type": "application/json"},
+            timeout=30
         )
         if r.status_code == 200:
             data = r.json()
-            # v2 response structure
             return data.get("message", {}).get("content", [{}])[0].get("text", "")
         elif r.status_code == 401:
-            _log_err("Cohere", "مفتاح غير صحيح (401)")
-        elif r.status_code == 402:
-            _log_err("Cohere", "رصيد منتهٍ (402)")
+            _log_err("Cohere", "مفتاح غير صحيح (401) — تجاوز Cohere")
+            return None  # ← لا يوقف العمل، يمرر للـ fallback التالي
+        elif r.status_code in (402, 403):
+            _log_err("Cohere", f"غير مصرح ({r.status_code}) — تجاوز")
+            return None
         elif r.status_code == 429:
-            _log_err("Cohere", "Rate Limit (429)")
+            _log_err("Cohere", "Rate Limit (429) — انتظار 2 ثانية")
+            time.sleep(2)
+            return None
         else:
-            try:
-                msg = r.json().get("message", "")
-            except Exception:
-                msg = r.text[:100]
+            try:   msg = r.json().get("message", "")
+            except Exception: msg = r.text[:100]
             _log_err("Cohere", f"{r.status_code} — {msg[:80]}")
-    except requests.exceptions.ConnectionError as e:
-        _log_err("Cohere", f"لا اتصال — {str(e)[:80]}")
-    except requests.exceptions.Timeout:
-        _log_err("Cohere", "Timeout (45s)")
     except Exception as e:
-        _log_err("Cohere", f"{str(e)[:80]}")
+        _log_err("Cohere", f"Fallback صامت — {str(e)[:60]}")
     return None
 
 def _parse_json(txt):

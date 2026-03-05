@@ -298,14 +298,16 @@ def _smart_rename_columns(df):
 
 # ── كلمات الضجيج التي تُشوّش المطابقة ──────────────────────────────
 _NOISE_RE = re.compile(
-    r'\b(عطر|تستر|تيستر|'
+    r'\b(عطر|تستر|تيستر|tester|'
     r'بارفيوم|بيرفيوم|بارفيومز|بيرفيومز|برفيوم|برفان|بارفان|بارفيم|'
     r'تواليت|تواليتة|كولون|اكسترايت|اكستريت|اكسترييت|'
-    r'او دو|او دي|أو دو|أو دي|'
+    r'او\s*دو|او\s*دي|أو\s*دو|أو\s*دي|'
     r'الرجالي|النسائي|للجنسين|رجالي|نسائي|'
     r'parfum|perfume|cologne|toilette|extrait|intense|'
-    r'eau de|pour homme|pour femme|for men|for women|unisex|'
-    r'edp|edt|edc|ml|مل|ملي)\b',
+    r'eau\s*de|pour\s*homme|pour\s*femme|for\s*men|for\s*women|unisex|'
+    r'edp|edt|edc)\b'
+    r'|\b\d+(?:\.\d+)?\s*(?:ml|مل|ملي|oz)\b'   # أحجام: 100ml, 50مل
+    r'|\b(100|200|50|75|150|125|250|300|30|80)\b',  # أرقام أحجام منفردة
     re.UNICODE | re.IGNORECASE
 )
 
@@ -327,33 +329,32 @@ def normalize(text):
     return re.sub(r'\s+', ' ', t).strip()
 
 
-def normalize_aggressive(text):
+def normalize_name(text):
     """
-    تطبيع عنيف للمطابقة الحساسة — يحذف كلمات الضجيج تماماً
-    يُستخدم في: كشف المفقودات + cross-check التستر/الأساسي
-    مثال: 'عطر ايسينشيال بيرفيوم فيج انفيوجن 100مل'
-          ↓
-          'essential fig infusion'
+    الدالة الموحدة للمطابقة — تُستخدم حصراً لمقارنة الأسماء.
+    تحذف: عطر/بارفيوم/بيرفيوم/تستر/مل/edp/edt/للجنسين/100/50/...
+    توحّد: أ/إ/آ→ا  ة/ه→ه  ى→ي
+    المثال: 'عطر ايسينشيال بيرفيوم فيج انفيوجن 100مل' → 'essential فيج infusion'
     """
     if not isinstance(text, str): return ""
     t = text.strip().lower()
-    # 1. توحيد الهمزات
+    # 1. توحيد الهمزات أولاً
     for src, dst in [('أ','ا'),('إ','ا'),('آ','ا'),('ة','ه'),
                      ('ى','ي'),('ؤ','و'),('ئ','ي'),('ـ','')]:
         t = t.replace(src, dst)
-    # 2. قاموس المرادفات (يترجم التهجئات البديلة)
+    # 2. قاموس المرادفات (ترجمة التهجئات البديلة)
     for k, v in _SYN.items():
         t = t.replace(k, v)
-    # 3. إزالة كلمات الضجيج بـ regex (الجوهر)
+    # 3. حذف كلمات الضجيج
     t = _NOISE_RE.sub(' ', t)
-    # 4. إزالة الأحجام (100ml, 50مل, 3.5oz)
-    t = re.sub(r'\d+(?:\.\d+)?\s*(?:ml|مل|ملي|oz)', ' ', t)
-    # 5. إزالة الأرقام المنفردة
+    # 4. حذف الأرقام المتبقية + الرموز
     t = re.sub(r'\b\d+\b', ' ', t)
-    # 6. إزالة الرموز
     t = re.sub(r'[^\w\s\u0600-\u06FF]', ' ', t)
-    result = re.sub(r'\s+', ' ', t).strip()
-    return result
+    return re.sub(r'\s+', ' ', t).strip()
+
+
+# alias للتوافق مع الكود القديم
+normalize_aggressive = normalize_name
 
 def extract_size(text):
     if not isinstance(text, str): return 0.0
@@ -553,7 +554,7 @@ class CompIndex:
         self.raw_names  = df[name_col].fillna("").astype(str).tolist()
         self.norm_names = [normalize(n) for n in self.raw_names]
         # ← نسخة normalize_aggressive لكل منتج (للمطابقة الفعلية)
-        self.agg_names  = [normalize_aggressive(n) for n in self.raw_names]
+        self.agg_names  = [normalize_name(n) for n in self.raw_names]  # ← normalize_name
         self.brands     = [extract_brand(n) for n in self.raw_names]
         self.sizes      = [extract_size(n) for n in self.raw_names]
         self.types      = [extract_type(n) for n in self.raw_names]
@@ -577,7 +578,7 @@ class CompIndex:
 
         # ← استخدم agg_names للمطابقة (أدق للعربية)
         # our_agg = normalize_aggressive للمنتج الخاص بنا
-        our_agg = normalize_aggressive(our_norm) if our_norm else our_norm
+        our_agg = normalize_name(our_norm) if our_norm else our_norm  # ← normalize_name
         fast = rf_process.extract(
             our_agg, valid_aggs,
             scorer=fuzz.token_set_ratio,
@@ -587,7 +588,7 @@ class CompIndex:
         cands = []
         seen  = set()
         for _, fast_score, vi in fast:
-            if fast_score < max(MATCH_THRESHOLD - 15, 40): continue
+            if fast_score < 45: continue  # ← يسمح بـ 45+ للمراجعة (60-85%)
             idx  = valid_idx[vi]
             name = self.raw_names[idx]
             if name in seen: continue
@@ -716,7 +717,7 @@ class CompIndex:
             base += pline_penalty
 
             score = round(max(0, min(100, base)), 1)
-            if score < MATCH_THRESHOLD: continue
+            if score < 60: continue   # ← 60% الحد الأدنى للمراجعة
 
             seen.add(name)
             cands.append({
@@ -892,26 +893,29 @@ def _row(product, our_price, our_id, brand, size, ptype, gender,
     else:
         risk = "🟢 منخفض"
 
-    # ═══ توزيع النتائج على الأقسام ═══
-    # 🔴 سعر أعلى: سعرنا أعلى من المنافس بأكثر من 10 ريال
-    # 🟢 سعر أقل: سعرنا أقل من المنافس بأكثر من 10 ريال
-    # ✅ موافق: سعرنا مناسب (فرق ≤ 10 ريال)
-    # ⚠️ تحت المراجعة: المطابقة غير مؤكدة (ثقة منخفضة)
+    # ═══ توزيع النتائج على الأقسام ═════════════════════════════════════
+    # الحدود المستخدمة:
+    #   score ≥ 85%           → مطابقة مؤكدة → توزيع سعري
+    #   60% ≤ score < 85%     → تحت المراجعة (مطابقة محتملة)
+    #   score < 60%           → يُخفى تماماً (return None من run_full_analysis)
     PRICE_DIFF_THRESHOLD = 10  # فرق السعر المقبول بالريال
+    NO_MATCH_THRESHOLD   = 60  # أقل من هذا → غير متطابق → يُخفى
+    REVIEW_MAX           = 85  # أقل من هذا → مراجعة
     if override:
         dec = override
-    elif src in ("gemini","auto") or score >= HIGH_CONFIDENCE:
-        # مطابقة مؤكدة → توزيع حسب السعر
+    elif score < NO_MATCH_THRESHOLD:
+        # نسبة منخفضة جداً → لا يظهر في أي واجهة
+        return None  # ← الفلتر الحاسم: يُحذف من النتائج كلياً
+    elif src in ("gemini","auto") or score >= REVIEW_MAX:
+        # مطابقة مؤكدة (≥85%) → توزيع حسب السعر
         if our_price > 0 and cp > 0:
             if diff > PRICE_DIFF_THRESHOLD:     dec = "🔴 سعر أعلى"
             elif diff < -PRICE_DIFF_THRESHOLD:   dec = "🟢 سعر أقل"
             else:                                dec = "✅ موافق"
         else:
             dec = "⚠️ تحت المراجعة"  # لا يوجد سعر → مراجعة
-    elif score >= REVIEW_THRESHOLD:
-        # مطابقة محتملة لكن تحتاج تأكيد → تحت المراجعة
-        dec = "⚠️ تحت المراجعة"
     else:
+        # 60% ≤ score < 85% → مطابقة محتملة → تحت المراجعة
         dec = "⚠️ تحت المراجعة"
 
     ai_lbl = {"gemini":f"🤖✅({score:.0f}%)",
@@ -972,17 +976,19 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True):
         for j, it in enumerate(pending):
             ci = idxs[j] if j < len(idxs) else 0
             if ci < 0:
-                # AI غير متأكد → أعطِ أفضل مرشح كمراجعة (وليس best=None بنسبة 0%)
+                # AI غير متأكد → أعطِ أفضل مرشح كمراجعة
                 best_fallback = it["candidates"][0] if it["candidates"] else None
-                results.append(_row(it["product"], it["our_price"], it["our_id"],
-                                    it["brand"], it["size"], it["ptype"], it["gender"],
-                                    best_fallback, "⚠️ تحت المراجعة", "ai_uncertain",
-                                    all_cands=it["all_cands"]))
+                rr = _row(it["product"], it["our_price"], it["our_id"],
+                          it["brand"], it["size"], it["ptype"], it["gender"],
+                          best_fallback, "⚠️ تحت المراجعة", "ai_uncertain",
+                          all_cands=it["all_cands"])
             else:
                 best = it["candidates"][ci]
-                results.append(_row(it["product"], it["our_price"], it["our_id"],
-                                    it["brand"], it["size"], it["ptype"], it["gender"],
-                                    best, src="gemini", all_cands=it["all_cands"]))
+                rr = _row(it["product"], it["our_price"], it["our_id"],
+                          it["brand"], it["size"], it["ptype"], it["gender"],
+                          best, src="gemini", all_cands=it["all_cands"])
+            if rr is not None:   # ← فلتر None (score < 60%)
+                results.append(rr)
         pending.clear()
 
     for i, (_, row) in enumerate(our_df.iterrows()):
@@ -1024,9 +1030,17 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True):
         top5  = all_cands[:5]
         best0 = top5[0]
 
+        if best0["score"] < 60:
+            # score منخفض جداً → لا يوجد منافس حقيقي → تخطي تماماً
+            if progress_callback:
+                progress_callback((i + 1) / total, results)
+            continue
+
         if best0["score"] >= 97 or not use_ai:
-            results.append(_row(product, our_price, our_id, brand, size, ptype, gender,
-                                best0, src="auto", all_cands=all_cands))
+            row_result = _row(product, our_price, our_id, brand, size, ptype, gender,
+                              best0, src="auto", all_cands=all_cands)
+            if row_result is not None:   # ← فلتر None
+                results.append(row_result)
         else:
             pending.append(dict(
                 product=product, our_price=our_price, our_id=our_id,
@@ -1066,7 +1080,7 @@ def find_missing_products(our_df, comp_dfs):
         brand  = extract_brand(name)
         norm   = normalize(name)
         # normalize_aggressive: يحذف عطر/بارفيوم/بيرفيوم... للمطابقة الحساسة
-        agg    = normalize_aggressive(name)
+        agg    = normalize_name(name)   # ← normalize_name
         pline  = extract_product_line(name, brand)
         is_t   = is_tester(name)
         # نسخة مُجرَّدة من "تستر" للمقارنة مع الأساسي
@@ -1126,7 +1140,7 @@ def find_missing_products(our_df, comp_dfs):
         c_agg= normalize_aggressive(cp_raw) — للمقارنة الفعلية
         """
         if not c_agg:
-            c_agg = normalize_aggressive(cp_raw)
+            c_agg = normalize_name(cp_raw)  # ← normalize_name
         bare_cn = re.sub(r"\btester\b|تستر|tester", "", c_agg).strip()
         c_brand_n = normalize(c_brand) if c_brand else ""
 
@@ -1222,7 +1236,7 @@ def find_missing_products(our_df, comp_dfs):
             if not cp or is_sample(cp): continue
 
             cn    = normalize(cp)
-            c_agg = normalize_aggressive(cp)   # ← النسخة العنيفة
+            c_agg = normalize_name(cp)        # ← normalize_name
             if not cn or not c_agg: continue
 
             # ── مفتاح التكرار: normalize_aggressive بدون تستر ──────
