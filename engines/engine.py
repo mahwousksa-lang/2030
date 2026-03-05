@@ -163,7 +163,47 @@ _SYN = {
     "مايلستون":"milestone",
     "سكاندل":"scandal","سكاندال":"scandal",
     " مل":" ml","ملي ":"ml ","ملي":"ml","مل":"ml",
-    "أ":"ا","إ":"ا","آ":"ا","ة":"ه","ى":"ي","ؤ":"و","ئ":"ي",
+    # ── توحيد الحروف العربية ──
+    "أ":"ا","إ":"ا","آ":"ا","ة":"ه","ى":"ي","ؤ":"و","ئ":"ي","ـ":"",
+    # ── تهجئات بديلة لكلمات العطور (الأهم للمطابقة) ──
+    "بيرفيوم":"edp","بيرفيومز":"edp","بارفيومز":"edp","برفان":"edp",
+    "پارفيوم":"edp","پرفيوم":"edp","بارفيم":"edp",
+    "تواليت":"edt","تواليتة":"edt","طواليت":"edt",
+    "اكسترايت":"extrait","اكستريت":"extrait","اكسترييت":"extrait",
+    "انتينس":"intense","انتانس":"intense","إنتنس":"intense",
+    # ── تهجئات الماركات الإضافية ──
+    "ايسينشيال":"essential","اسنشيال":"essential","ايسانشيال":"essential",
+    "اسنشال":"essential","ايسنشال":"essential","ايسينشال":"essential",
+    "سولييل":"soleil","سولايل":"soleil","سوليل":"soleil",
+    "فلورال":"floral","فلورل":"floral","فلوريل":"floral",
+    "سوفاج":"sauvage","سوفايج":"sauvage","سافاج":"sauvage",
+    "بلو":"bleu","بلوو":"bleu",
+    "ليبر":"libre","ليبرة":"libre",
+    "اوريجينال":"original","أوريجينال":"original",
+    "إكسترا":"extra","اكسترا":"extra",
+    "انفيوجن":"infusion","انفيجن":"infusion","انفيوزن":"infusion",
+    "ديليت":"delight","ديلايت":"delight",
+    "نيوتر":"neutre","نيوتره":"neutre","نيوتير":"neutre",
+    "بيور":"pure","بيوره":"pure","بيورة":"pure",
+    "نوار":"noir","نوير":"noir",
+    "روز":"rose","روس":"rose",
+    "جاسمين":"jasmine","جازمين":"jasmine","ياسمين":"jasmine",
+    "ميلانجي":"melange","ميلانج":"melange",
+    "بريلوج":"prelude","برولوج":"prelude",
+    "ريزيرف":"reserve","ريزيرفي":"reserve",
+    "اميثست":"amethyst","اميثيست":"amethyst",
+    "دراكار":"drakkar","دراكر":"drakkar",
+    "نمروود":"nimrod","نمرود":"nimrod",
+    "اوليفيا":"olivia","اوليفيه":"olivia",
+    "ليجند":"legend","ليجاند":"legend",
+    "سبورت":"sport","سبورتس":"sport",
+    "بلاك":"black","بلك":"black",
+    "وايت":"white","وايث":"white",
+    "جولد":"gold","قولد":"gold",
+    "سيلفر":"silver","سيلفير":"silver",
+    "نايت":"night","نايث":"night",
+    "داي":"day","دي":"day",
+    "او":"",  # إزالة حروف الربط الزائدة
 }
 
 # ─── SQLite Cache ───────────────────────────
@@ -256,15 +296,64 @@ def _smart_rename_columns(df):
             df = df.rename(columns=new_cols)
     return df
 
+# ── كلمات الضجيج التي تُشوّش المطابقة ──────────────────────────────
+_NOISE_RE = re.compile(
+    r'\b(عطر|تستر|تيستر|'
+    r'بارفيوم|بيرفيوم|بارفيومز|بيرفيومز|برفيوم|برفان|بارفان|بارفيم|'
+    r'تواليت|تواليتة|كولون|اكسترايت|اكستريت|اكسترييت|'
+    r'او دو|او دي|أو دو|أو دي|'
+    r'الرجالي|النسائي|للجنسين|رجالي|نسائي|'
+    r'parfum|perfume|cologne|toilette|extrait|intense|'
+    r'eau de|pour homme|pour femme|for men|for women|unisex|'
+    r'edp|edt|edc|ml|مل|ملي)\b',
+    re.UNICODE | re.IGNORECASE
+)
+
 def normalize(text):
+    """تطبيع قياسي: يوحّد الحروف والمرادفات مع الحفاظ على كامل النص"""
     if not isinstance(text, str): return ""
     t = text.strip().lower()
+    # 1. توحيد الهمزات أولاً (قبل أي استبدال)
+    for src, dst in [('أ','ا'),('إ','ا'),('آ','ا'),('ة','ه'),
+                     ('ى','ي'),('ؤ','و'),('ئ','ي'),('ـ','')]:
+        t = t.replace(src, dst)
+    # 2. المرادفات المخصصة
     for k, v in WORD_REPLACEMENTS.items():
         t = t.replace(k.lower(), v)
+    # 3. قاموس المرادفات الشامل
     for k, v in _SYN.items():
         t = t.replace(k, v)
     t = re.sub(r'[^\w\s\u0600-\u06FF.]', ' ', t)
     return re.sub(r'\s+', ' ', t).strip()
+
+
+def normalize_aggressive(text):
+    """
+    تطبيع عنيف للمطابقة الحساسة — يحذف كلمات الضجيج تماماً
+    يُستخدم في: كشف المفقودات + cross-check التستر/الأساسي
+    مثال: 'عطر ايسينشيال بيرفيوم فيج انفيوجن 100مل'
+          ↓
+          'essential fig infusion'
+    """
+    if not isinstance(text, str): return ""
+    t = text.strip().lower()
+    # 1. توحيد الهمزات
+    for src, dst in [('أ','ا'),('إ','ا'),('آ','ا'),('ة','ه'),
+                     ('ى','ي'),('ؤ','و'),('ئ','ي'),('ـ','')]:
+        t = t.replace(src, dst)
+    # 2. قاموس المرادفات (يترجم التهجئات البديلة)
+    for k, v in _SYN.items():
+        t = t.replace(k, v)
+    # 3. إزالة كلمات الضجيج بـ regex (الجوهر)
+    t = _NOISE_RE.sub(' ', t)
+    # 4. إزالة الأحجام (100ml, 50مل, 3.5oz)
+    t = re.sub(r'\d+(?:\.\d+)?\s*(?:ml|مل|ملي|oz)', ' ', t)
+    # 5. إزالة الأرقام المنفردة
+    t = re.sub(r'\b\d+\b', ' ', t)
+    # 6. إزالة الرموز
+    t = re.sub(r'[^\w\s\u0600-\u06FF]', ' ', t)
+    result = re.sub(r'\s+', ' ', t).strip()
+    return result
 
 def extract_size(text):
     if not isinstance(text, str): return 0.0
@@ -460,9 +549,11 @@ class CompIndex:
         self.name_col  = name_col
         self.id_col    = id_col
         self.df        = df.reset_index(drop=True)
-        # تطبيع مسبق لكل الأسماء — مرة واحدة فقط
+        # تطبيع مسبق — مرة واحدة فقط لكل منافس
         self.raw_names  = df[name_col].fillna("").astype(str).tolist()
         self.norm_names = [normalize(n) for n in self.raw_names]
+        # ← نسخة normalize_aggressive لكل منتج (للمطابقة الفعلية)
+        self.agg_names  = [normalize_aggressive(n) for n in self.raw_names]
         self.brands     = [extract_brand(n) for n in self.raw_names]
         self.sizes      = [extract_size(n) for n in self.raw_names]
         self.types      = [extract_type(n) for n in self.raw_names]
@@ -482,11 +573,15 @@ class CompIndex:
 
         valid_norms = [self.norm_names[i] for i in valid_idx]
 
-        # extract بالطريقة الأسرع
+        valid_aggs = [self.agg_names[i] for i in valid_idx]
+
+        # ← استخدم agg_names للمطابقة (أدق للعربية)
+        # our_agg = normalize_aggressive للمنتج الخاص بنا
+        our_agg = normalize_aggressive(our_norm) if our_norm else our_norm
         fast = rf_process.extract(
-            our_norm, valid_norms,
+            our_agg, valid_aggs,
             scorer=fuzz.token_set_ratio,
-            limit=min(25, len(valid_norms))
+            limit=min(30, len(valid_aggs))
         )
 
         cands = []
@@ -588,12 +683,13 @@ class CompIndex:
                     elif pl_score < 80:
                         pline_penalty = -22
 
-            # ═══ score تفصيلي ═══
-            n1, n2 = our_norm, self.norm_names[idx]
+            # ═══ score تفصيلي — يستخدم agg للمقارنة ═══
+            n1 = our_agg   # normalize_aggressive
+            n2 = self.agg_names[idx]
             s1 = fuzz.token_sort_ratio(n1, n2)
             s2 = fuzz.token_set_ratio(n1, n2)
             s3 = fuzz.partial_ratio(n1, n2)
-            base = s1*0.35 + s2*0.35 + s3*0.30
+            base = s1*0.30 + s2*0.50 + s3*0.20   # token_set الوزن الأعلى
 
             # ═══ تعديلات الماركة ═══
             if our_br and c_br:
@@ -876,9 +972,12 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True):
         for j, it in enumerate(pending):
             ci = idxs[j] if j < len(idxs) else 0
             if ci < 0:
+                # AI غير متأكد → أعطِ أفضل مرشح كمراجعة (وليس best=None بنسبة 0%)
+                best_fallback = it["candidates"][0] if it["candidates"] else None
                 results.append(_row(it["product"], it["our_price"], it["our_id"],
                                     it["brand"], it["size"], it["ptype"], it["gender"],
-                                    None, "⚠️ تحت المراجعة", "ai_uncertain"))
+                                    best_fallback, "⚠️ تحت المراجعة", "ai_uncertain",
+                                    all_cands=it["all_cands"]))
             else:
                 best = it["candidates"][ci]
                 results.append(_row(it["product"], it["our_price"], it["our_id"],
@@ -912,11 +1011,11 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True):
         all_cands = []
         for idx_obj in indices.values():
             all_cands.extend(idx_obj.search(our_n, brand, size, ptype, gender,
-                                            our_pline=our_pl, top_n=5))
+                                            our_pline=our_pl, top_n=6))
 
         if not all_cands:
-            results.append(_row(product, our_price, our_id, brand, size, ptype, gender,
-                                None, "⚠️ تحت المراجعة"))
+            # ← الإصلاح الجوهري: لا يوجد أي منافس لهذا المنتج إطلاقاً
+            # → تخطي تماماً، لا يظهر في المراجعة (قسم المراجعة للمطابقات المحتملة فقط)
             if progress_callback:
                 progress_callback((i + 1) / total, results)
             continue
@@ -966,14 +1065,17 @@ def find_missing_products(our_df, comp_dfs):
         if not name or is_sample(name): continue
         brand  = extract_brand(name)
         norm   = normalize(name)
+        # normalize_aggressive: يحذف عطر/بارفيوم/بيرفيوم... للمطابقة الحساسة
+        agg    = normalize_aggressive(name)
         pline  = extract_product_line(name, brand)
         is_t   = is_tester(name)
         # نسخة مُجرَّدة من "تستر" للمقارنة مع الأساسي
-        bare_n = re.sub(r"\btester\b","", norm).strip()
+        bare_n    = re.sub(r"\btester\b|تستر|tester", "", agg).strip()
         our_items.append({
             "raw":      name,
             "norm":     norm,
-            "bare":     bare_n,
+            "agg":      agg,       # ← النسخة العنيفة للمطابقة
+            "bare":     bare_n,    # ← بدون تستر
             "brand":    brand,
             "pline":    pline,
             "size":     extract_size(name),
@@ -982,11 +1084,11 @@ def find_missing_products(our_df, comp_dfs):
             "is_tester": is_t,
         })
 
-    # ── فهرس سريع بالكلمات ──────────────────────────────────────────────
+    # ── فهرس سريع بالكلمات (مبني على agg المطبَّع عنيفاً) ──────────────
     _word_idx = {}
     for p in our_items:
         for w in set(p["bare"].split()):
-            if len(w) >= 4:
+            if len(w) >= 3:  # ← 3 بدل 4 لاستيعاب كلمات عربية قصيرة
                 _word_idx.setdefault(w, []).append(p)
 
     def _word_overlap(a, b):
@@ -995,30 +1097,37 @@ def find_missing_products(our_df, comp_dfs):
         return len(sa & sb) / len(sa | sb) * 100
 
     def _score_pair(cn, on, c_pline, o_pline):
-        s1 = fuzz.token_sort_ratio(cn, on)
-        s2 = fuzz.token_set_ratio(cn, on)
-        s3 = fuzz.partial_ratio(cn, on)
-        try:    s4 = 100 - Indel.normalized_distance(cn, on) * 100
-        except: s4 = 0
+        """
+        cn/on هما النسختان العنيفتان (normalize_aggressive).
+        3 خوارزميات مرجحة: token_set (الأقوى) + token_sort + partial.
+        """
+        s1 = fuzz.token_sort_ratio(cn, on)    # يتجاهل الترتيب
+        s2 = fuzz.token_set_ratio(cn, on)     # الأقوى: يتجاهل الكلمات الزائدة
+        s3 = fuzz.partial_ratio(cn, on)       # يجد نصاً ضمن نص
+        base = s1*0.30 + s2*0.50 + s3*0.20   # token_set له وزن أعلى
         s5 = fuzz.token_set_ratio(c_pline, o_pline) if (c_pline and o_pline) else 0
-        base = s1*0.25 + s2*0.35 + s3*0.20 + s4*0.10 + (s5*0.10 if s5 else 0)
         return base, s2, s5
 
     def _get_candidates(bare_cn):
-        """فهرس الكلمات للبحث السريع ثم fuzzy للترتيب"""
+        """فهرس الكلمات للبحث السريع — يستخدم bare (normalize_aggressive بدون تستر)"""
         seen = {}
         for w in set(bare_cn.split()):
-            if len(w) >= 4 and w in _word_idx:
+            if len(w) >= 3 and w in _word_idx:
                 for p in _word_idx[w]:
                     seen[id(p)] = p
-        return list(seen.values()) if seen else our_items[:200]
+        # fallback: إذا لم يجد شيئاً → ابحث في كامل القائمة
+        return list(seen.values()) if seen else our_items
 
-    def _is_same_product(cp_raw, cn, c_brand, c_pline, c_size, c_type, c_gender, c_is_tester):
+    def _is_same_product(cp_raw, cn, c_brand, c_pline, c_size, c_type, c_gender, c_is_tester, c_agg=""):
         """
         يُعيد: (found, score, reason, variant_info)
         variant_info = None | {"type":"tester"|"base","product":p,"score":float}
+        cn   = normalize(cp_raw)   — للمعلومات المساعدة
+        c_agg= normalize_aggressive(cp_raw) — للمقارنة الفعلية
         """
-        bare_cn = re.sub(r"\btester\b", "", cn).strip()
+        if not c_agg:
+            c_agg = normalize_aggressive(cp_raw)
+        bare_cn = re.sub(r"\btester\b|تستر|tester", "", c_agg).strip()
         c_brand_n = normalize(c_brand) if c_brand else ""
 
         # فرز المرشحين: نفس الماركة أولاً
@@ -1026,12 +1135,13 @@ def find_missing_products(our_df, comp_dfs):
         if c_brand_n:
             priority = [p for p in candidates if normalize(p["brand"]) == c_brand_n]
             others   = [p for p in candidates if normalize(p["brand"]) != c_brand_n]
-            candidates = priority + others[:50]
+            candidates = priority + others[:100]
 
         best_same   = (0, None, "")
         best_variant= (0, None, "")   # تستر ↔ أساسي
 
-        for p in candidates[:300]:
+        for p in candidates[:400]:
+            # ← المقارنة على bare (agg بدون تستر) بدل norm
             o_bare = p["bare"]
             base, set_sc, pline_sc = _score_pair(bare_cn, o_bare, c_pline, p["pline"])
 
@@ -1066,13 +1176,15 @@ def find_missing_products(our_df, comp_dfs):
                 if final > best_variant[0]:
                     best_variant = (final, p, f"{'تستر' if p['is_tester'] else 'العطر الأساسي'}")
 
-        # ── قرار النوع المطابق ────────────────────────────────────────
-        CONFIRMED = 82; SIMILAR = 68
+        # ── قرار النوع المطابق ─────────────────────────────────────────
+        # بعد normalize_aggressive: 75% كافية للتأكد (الضجيج محذوف)
+        CONFIRMED = 75   # ← خُفِّض من 82% لأن normalize_aggressive يُصفّي الضجيج
+        SIMILAR   = 60   # ← حد "مشابه محتمل" — يظهر للمستخدم مع تحذير
 
         if best_same[0] >= CONFIRMED:
             return True, best_same[0], best_same[2], None
         if best_same[0] >= SIMILAR:
-            # منطقة رمادية → مفقود لكن مع تحذير
+            # منطقة رمادية → مفقود لكن مع تحذير للمستخدم
             vinfo = {"type": "similar",
                      "product": best_same[1]["raw"] if best_same[1] else "",
                      "score": best_same[0]} if best_same[1] else None
@@ -1080,7 +1192,7 @@ def find_missing_products(our_df, comp_dfs):
 
         # ── كشف التستر/الأساسي ───────────────────────────────────────
         variant_info = None
-        if best_variant[0] >= 62 and best_variant[1]:
+        if best_variant[0] >= 55 and best_variant[1]:
             p_var  = best_variant[1]
             v_type = "tester" if p_var["is_tester"] else "base"
             variant_info = {
@@ -1093,8 +1205,8 @@ def find_missing_products(our_df, comp_dfs):
         return False, best_same[0], "", variant_info
 
     # ── البحث الرئيسي ─────────────────────────────────────────────────
-    missing = []
-    seen_bare = set()
+    missing  = []
+    seen_bare = set()   # مفاتيح إزالة التكرار بين المنافسين
 
     for cname, cdf in comp_dfs.items():
         ccol = _fcol(cdf, ["المنتج","اسم المنتج","Product","Name","name"])
@@ -1109,11 +1221,13 @@ def find_missing_products(our_df, comp_dfs):
             cp = str(row.get(ccol, "")).strip()
             if not cp or is_sample(cp): continue
 
-            cn = normalize(cp)
-            if not cn: continue
+            cn    = normalize(cp)
+            c_agg = normalize_aggressive(cp)   # ← النسخة العنيفة
+            if not cn or not c_agg: continue
 
-            # مفتاح إزالة التكرار: بدون كلمة تستر
-            bare_ck = re.sub(r"\btester\b", "", cn).strip()
+            # ── مفتاح التكرار: normalize_aggressive بدون تستر ──────
+            bare_ck = re.sub(r"\btester\b|تستر|tester", "", c_agg).strip()
+            if not bare_ck or len(bare_ck) < 3: continue
             if bare_ck in seen_bare: continue
 
             c_brand   = extract_brand(cp)
@@ -1123,11 +1237,24 @@ def find_missing_products(our_df, comp_dfs):
             c_gender  = extract_gender(cp)
             c_is_t    = is_tester(cp)
 
+            # ── Cross-check الأول: بالـ normalize_aggressive ─────────
             found, score, reason, variant = _is_same_product(
-                cp, cn, c_brand, c_pline, c_size, c_type, c_gender, c_is_t)
+                cp, cn, c_brand, c_pline, c_size, c_type, c_gender, c_is_t, c_agg)
 
             if found:
-                continue  # موجود لدينا بنفس النوع → تخطي
+                continue  # موجود لدينا → تخطي
+
+            # ── Cross-check الثاني: token_set_ratio المباشر على bare ─
+            # يحمي من الحالات الهامشية التي يفوتها _is_same_product
+            if not found:
+                for p in our_items:
+                    direct = fuzz.token_set_ratio(bare_ck, p["bare"])
+                    if direct >= 82:   # 82% بعد الـ normalize_aggressive = تطابق فعلي
+                        found = True
+                        break
+
+            if found:
+                continue
 
             seen_bare.add(bare_ck)
 
