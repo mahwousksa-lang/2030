@@ -20,7 +20,11 @@ def _date():
 
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
+    # WAL: يسمح بالقراءة والكتابة المتزامنة من threads مختلفة بدون تعارض
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA busy_timeout=30000;")  # 30 ثانية انتظار بدل الخطأ الفوري
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -261,21 +265,22 @@ def get_price_changes(days=7):
 # ─── المعالجة الخلفية ──────────────────────
 def save_job_progress(job_id, total, processed, results, status="running",
                       our_file="", comp_files="", missing=None):
-    conn = get_db()
     missing_data = json.dumps(missing if missing else [], ensure_ascii=False, default=str)
-    conn.execute(
-        """INSERT OR REPLACE INTO job_progress
-           (job_id,started_at,updated_at,status,total,processed,
-            results_json,missing_json,our_file,comp_files)
-           VALUES (?,
-               COALESCE((SELECT started_at FROM job_progress WHERE job_id=?), ?),
-               ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (job_id, job_id, _ts(), _ts(), status, total, processed,
-         json.dumps(results, ensure_ascii=False, default=str),
-         missing_data,
-         our_file, comp_files)
-    )
-    conn.commit(); conn.close()
+    results_data = json.dumps(results, ensure_ascii=False, default=str)
+    with sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout=30000;")
+        conn.execute(
+            """INSERT OR REPLACE INTO job_progress
+               (job_id,started_at,updated_at,status,total,processed,
+                results_json,missing_json,our_file,comp_files)
+               VALUES (?,
+                   COALESCE((SELECT started_at FROM job_progress WHERE job_id=?), ?),
+                   ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (job_id, job_id, _ts(), _ts(), status, total, processed,
+             results_data, missing_data, our_file, comp_files)
+        )
+        conn.commit()
 
 
 def get_job_progress(job_id):
@@ -543,18 +548,22 @@ def upsert_comp_catalog(comp_dfs: dict):
 def save_processed(product_key: str, product_name: str, competitor: str,
                    action: str, old_price=0.0, new_price=0.0,
                    product_id="", notes=""):
-    """يحفظ منتجاً في قائمة المعالجة — مع منع التكرار"""
-    conn = get_db()
-    conn.execute(
-        """INSERT OR REPLACE INTO processed_products
-           (timestamp, product_key, product_name, competitor, action,
-            old_price, new_price, product_id, notes)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
-        (_ts(), product_key, product_name, competitor, action,
-         old_price, new_price, product_id, notes)
-    )
-    conn.commit()
-    conn.close()
+    """يحفظ منتجاً في قائمة المعالجة — مع منع التكرار، آمن للثريدات"""
+    try:
+        with sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30) as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA busy_timeout=30000;")
+            conn.execute(
+                """INSERT OR REPLACE INTO processed_products
+                   (timestamp, product_key, product_name, competitor, action,
+                    old_price, new_price, product_id, notes)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (_ts(), product_key, product_name, competitor, action,
+                 old_price, new_price, product_id, notes)
+            )
+            conn.commit()
+    except Exception:
+        pass  # لا يوقف الثريد الخلفي
 
 
 def get_processed(limit=200) -> list:
