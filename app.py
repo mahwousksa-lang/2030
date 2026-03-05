@@ -247,14 +247,27 @@ def render_pro_table(df, prefix, section_type="update", show_search=True):
     with ac4:
         if st.button("📤 إرسال كل لـ Make", key=f"{prefix}_make_all"):
             products = export_to_make_format(filtered, section_type)
-            # توجيه صحيح حسب نوع القسم
             if section_type in ("missing", "new"):
                 res = send_new_products(products)
             else:
-                # raise / lower / approved / update / review → تحديث أسعار
                 res = send_price_updates(products)
             if res["success"]:
                 st.success(res["message"])
+                # v26: سجّل كل منتج في processed_products
+                for _i, (_idx, _r) in enumerate(filtered.iterrows()):
+                    _pname = str(_r.get("المنتج", _r.get("منتج_المنافس", "")))
+                    _pkey  = f"{prefix}_{_pname}_{_i}"
+                    _pid_r = str(_r.get("معرف_المنتج", _r.get("معرف_المنافس", "")))
+                    _comp  = str(_r.get("المنافس",""))
+                    _op    = safe_float(_r.get("السعر", _r.get("سعر_المنافس", 0)))
+                    _np    = safe_float(_r.get("سعر_المنافس", _r.get("السعر", 0)))
+                    st.session_state.hidden_products.add(_pkey)
+                    save_hidden_product(_pkey, _pname, "sent_to_make_bulk")
+                    save_processed(_pkey, _pname, _comp, "send_price",
+                                   old_price=_op, new_price=_np,
+                                   product_id=_pid_r,
+                                   notes=f"إرسال جماعي ← {prefix}")
+                st.rerun()
             else:
                 st.error(res["message"])
     with ac5:
@@ -266,7 +279,16 @@ def render_pro_table(df, prefix, section_type="update", show_search=True):
                        for k, v in pending.items()]
             res = send_price_updates(to_send)
             st.success(f"✅ تم إرسال {len(to_send)} قرار لـ Make")
+            # v26: سجّل القرارات المعلقة في processed_products
+            for k, v in pending.items():
+                _pkey = f"decision_{k}"
+                _act  = v.get("action","approved")
+                save_processed(_pkey, k, v.get("competitor",""), _act,
+                               old_price=safe_float(v.get("our_price",0)),
+                               new_price=safe_float(v.get("comp_price",0)),
+                               notes=f"قرار معلق → Make | {v.get('reason','')}")
             st.session_state.decisions_pending = {}
+            st.rerun()
 
     st.caption(f"عرض {len(filtered)} من {len(df)} منتج — {datetime.now().strftime('%H:%M:%S')}")
 
@@ -468,7 +490,14 @@ def render_pro_table(df, prefix, section_type="update", show_search=True):
                 }
                 log_decision(our_name, prefix, "approved",
                              "موافقة يدوية", our_price, comp_price, diff, comp_src)
-                st.success("✅")
+                _hk3 = f"{prefix}_{our_name}_{idx}"
+                st.session_state.hidden_products.add(_hk3)
+                save_hidden_product(_hk3, our_name, "approved")
+                save_processed(_hk3, our_name, comp_src, "approved",
+                               old_price=our_price, new_price=our_price,
+                               product_id=str(row.get("معرف_المنتج","")),
+                               notes=f"موافق من {prefix} | منافس: {comp_src}")
+                st.rerun()
 
         with b4:  # تأجيل
             if st.button("⏸️ تأجيل", key=f"df_{prefix}_{idx}"):
@@ -495,6 +524,10 @@ def render_pro_table(df, prefix, section_type="update", show_search=True):
                 _hk = f"{prefix}_{our_name}_{idx}"
                 st.session_state.hidden_products.add(_hk)
                 save_hidden_product(_hk, our_name, "removed")
+                save_processed(_hk, our_name, comp_src, "removed",
+                               old_price=our_price, new_price=our_price,
+                               product_id=str(row.get("معرف_المنتج","")),
+                               notes=f"إزالة من {prefix}")
                 st.rerun()
 
         with b6:  # سعر يدوي
@@ -533,6 +566,10 @@ def render_pro_table(df, prefix, section_type="update", show_search=True):
                     _hk = f"{prefix}_{our_name}_{idx}"
                     st.session_state.hidden_products.add(_hk)
                     save_hidden_product(_hk, our_name, "sent_to_make")
+                    save_processed(_hk, our_name, comp_src, "send_price",
+                                   old_price=our_price, new_price=_final_price,
+                                   product_id=_pid,
+                                   notes=f"Make ← {prefix} | منافس: {comp_src} | {comp_price:.0f}→{_final_price:.0f}ر.س")
                     st.rerun()
 
         with b8:  # تحقق AI — يُصحح القسم
@@ -1254,6 +1291,9 @@ elif page == "🔍 منتجات مفقودة":
                                 _mk = f"missing_{name}_{idx}"
                                 st.session_state.hidden_products.add(_mk)
                                 save_hidden_product(_mk, name, "sent_to_make")
+                                save_processed(_mk, name, comp, "send_missing",
+                                               new_price=suggested_price,
+                                               notes=f"إضافة جديدة + وصف {len(_desc_send.split())} كلمة")
                                 for k in [f"desc_{idx}",f"frag_info_{idx}"]:
                                     if k in st.session_state: del st.session_state[k]
                                 st.rerun()
@@ -1280,6 +1320,9 @@ elif page == "🔍 منتجات مفقودة":
                         _ign = f"missing_{name}_{idx}"
                         st.session_state.hidden_products.add(_ign)
                         save_hidden_product(_ign, name, "ignored")
+                        save_processed(_ign, name, comp, "ignored",
+                                       new_price=price,
+                                       notes="تجاهل من قسم المفقودة")
                         st.rerun()
 
                 st.markdown('<hr style="border:none;border-top:1px solid #0d1a2e;margin:8px 0">', unsafe_allow_html=True)
@@ -1418,6 +1461,9 @@ elif page == "⚠️ تحت المراجعة":
                         log_decision(our_name,"review","approved","موافق",our_price,comp_price,diff,comp_name_s)
                         st.session_state.hidden_products.add(_rv_key)
                         save_hidden_product(_rv_key, our_name, "approved_from_review")
+                        save_processed(_rv_key, our_name, comp_name_s, "approved",
+                                       old_price=our_price, new_price=our_price,
+                                       notes="موافق من تحت المراجعة")
                         st.rerun()
 
                 with bc:
@@ -1425,6 +1471,9 @@ elif page == "⚠️ تحت المراجعة":
                         log_decision(our_name,"review","price_raise","سعر أعلى",our_price,comp_price,diff,comp_name_s)
                         st.session_state.hidden_products.add(_rv_key)
                         save_hidden_product(_rv_key, our_name, "moved_price_raise")
+                        save_processed(_rv_key, our_name, comp_name_s, "send_price",
+                                       old_price=our_price, new_price=comp_price - 1 if comp_price > 0 else our_price,
+                                       notes="نُقل من المراجعة → سعر أعلى")
                         st.rerun()
 
                 with bd:
@@ -1432,6 +1481,9 @@ elif page == "⚠️ تحت المراجعة":
                         log_decision(our_name,"review","missing","مفقود",our_price,comp_price,diff,comp_name_s)
                         st.session_state.hidden_products.add(_rv_key)
                         save_hidden_product(_rv_key, our_name, "moved_missing")
+                        save_processed(_rv_key, our_name, comp_name_s, "send_missing",
+                                       new_price=comp_price,
+                                       notes="نُقل من المراجعة → مفقود")
                         st.rerun()
 
                 with be:
@@ -1439,6 +1491,9 @@ elif page == "⚠️ تحت المراجعة":
                         log_decision(our_name,"review","ignored","تجاهل",our_price,comp_price,diff,comp_name_s)
                         st.session_state.hidden_products.add(_rv_key)
                         save_hidden_product(_rv_key, our_name, "ignored_review")
+                        save_processed(_rv_key, our_name, comp_name_s, "ignored",
+                                       old_price=our_price,
+                                       notes="تجاهل من تحت المراجعة")
                         st.rerun()
 
                 st.markdown('<hr style="border:none;border-top:1px solid #0d1a2e;margin:6px 0">',
