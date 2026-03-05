@@ -74,14 +74,18 @@ def _safe_float(val, default: float = 0.0) -> float:
 
 # ── تنظيف product_id ──────────────────────────────────────────────────────
 def _clean_pid(raw) -> str:
+    """
+    product_id دائماً كـ str(int(float(value)))
+    مثال: 100.0 → "100" | "1081786650.0" → "1081786650"
+    """
     if raw is None: return ""
-    try:
-        f = float(raw)
-        return str(int(f)) if f == int(f) else str(raw).strip()
-    except (ValueError, TypeError):
-        pass
     s = str(raw).strip()
-    return "" if s in ("nan", "None", "NaN") else s
+    if s in ("", "nan", "None", "NaN", "0", "0.0"): return ""
+    try:
+        # str(int(float(...))) يضمن 100.0 → "100"
+        return str(int(float(s)))
+    except (ValueError, TypeError):
+        return s
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -139,9 +143,9 @@ def send_price_updates(products: List[Dict]) -> Dict:
             continue
 
         payload = {
-            "product_id": product_id,
+            "product_id": product_id,          # str(int(float(...)))
             "name":       name,
-            "price":      price,
+            "price":      float(price),         # ← float صريح دائماً
         }
 
         result = _post_to_webhook(WEBHOOK_UPDATE_PRICES, payload)
@@ -253,11 +257,11 @@ def send_new_products(products: List[Dict]) -> Dict:
 
         item = {
             "أسم المنتج":      name,
-            "سعر المنتج":      price,
+            "سعر المنتج":      float(price),        # ← float صريح لـ Make/سلة
             "رمز المنتج sku":  "",
             "الوزن":           1,
-            "سعر التكلفة":     _safe_float(p.get("cost_price", 0)),
-            "السعر المخفض":    _safe_float(p.get("sale_price",  0)),
+            "سعر التكلفة":     float(_safe_float(p.get("cost_price", 0))),
+            "السعر المخفض":    float(_safe_float(p.get("sale_price",  0))),
             "الوصف":           str(p.get("الوصف", p.get("description", ""))).strip(),
         }
         # حقل صورة اختياري
@@ -302,11 +306,11 @@ def send_missing_products(products: List[Dict]) -> Dict:
 
         item = {
             "أسم المنتج":      name,
-            "سعر المنتج":      price,
+            "سعر المنتج":      float(price),        # ← float صريح لـ Make/سلة
             "رمز المنتج sku":  "",
             "الوزن":           1,
-            "سعر التكلفة":     _safe_float(p.get("cost_price", 0)),
-            "السعر المخفض":    _safe_float(p.get("sale_price",  0)),
+            "سعر التكلفة":     float(_safe_float(p.get("cost_price", 0))),
+            "السعر المخفض":    float(_safe_float(p.get("sale_price",  0))),
             "الوصف":           str(p.get("الوصف", p.get("description", ""))).strip(),
         }
         if p.get("image_url"):
