@@ -42,13 +42,17 @@ from utils.db_manager import (init_db, log_event, log_decision,
                                get_analysis_history, upsert_price_history,
                                get_price_history, get_price_changes,
                                save_job_progress, get_job_progress, get_last_job,
-                               save_hidden_product, get_hidden_product_keys)
+                               save_hidden_product, get_hidden_product_keys,
+                               init_db_v26, upsert_our_catalog, upsert_comp_catalog,
+                               save_processed, get_processed, undo_processed,
+                               get_processed_keys)
 
 # ── إعداد الصفحة ──────────────────────────
 st.set_page_config(page_title=APP_TITLE, page_icon=APP_ICON,
                    layout="wide", initial_sidebar_state="expanded")
 st.markdown(get_styles(), unsafe_allow_html=True)
 init_db()
+init_db_v26()
 
 # ── Session State ─────────────────────────
 _defaults = {
@@ -756,7 +760,14 @@ elif page == "📂 رفع الملفات":
                     else: comp_dfs[cf.name] = cdf
 
                 if comp_dfs:
-                    # حفظ البيانات في session_state لاستخدامها لاحقاً في find_missing_products
+                    # ── v26: upsert كتالوج يومي بدون تكرار ──────────
+                    with st.spinner("📦 تحديث الكتالوج اليومي..."):
+                        r_our  = upsert_our_catalog(our_df,
+                            name_col="اسم المنتج", id_col="رقم المنتج", price_col="السعر")
+                        r_comp = upsert_comp_catalog(comp_dfs)
+                        st.caption(f"✅ كتالوجنا: {r_our['inserted']} جديد / {r_our['updated']} تحديث | "
+                                   f"المنافسين: {r_comp['new_products']} جديد")
+                    # ─────────────────────────────────────────────────
                     st.session_state.our_df = our_df
                     st.session_state.comp_dfs = comp_dfs
                     job_id = str(uuid.uuid4())[:8]
@@ -922,7 +933,7 @@ elif page == "✅ موافق عليها":
 
 
 # ════════════════════════════════════════════════
-#  6. منتجات مفقودة — خبير مهووس + صور + Make
+#  6. منتجات مفقودة — v26 مع كشف التستر/الأساسي
 # ════════════════════════════════════════════════
 elif page == "🔍 منتجات مفقودة":
     st.header("🔍 منتجات المنافسين غير الموجودة عندنا")
@@ -930,61 +941,94 @@ elif page == "🔍 منتجات مفقودة":
 
     if st.session_state.results and "missing" in st.session_state.results:
         df = st.session_state.results["missing"]
-        if not df.empty:
-            st.warning(f"⚠️ {len(df)} منتج مفقود — خبير مهووس جاهز لكتابة الوصف وجلب الصور")
+        if df is not None and not df.empty:
+            # ── إحصاءات سريعة ──────────────────────────────────────────────
+            total_miss   = len(df)
+            has_tester   = df["نوع_متاح"].str.contains("تستر", na=False).sum()    if "نوع_متاح" in df.columns else 0
+            has_base     = df["نوع_متاح"].str.contains("العطر الأساسي", na=False).sum() if "نوع_متاح" in df.columns else 0
+            pure_missing = total_miss - has_tester - has_base
 
-            # ── AI لتحليل الأولويات ────────────────────────────────────────
+            c1,c2,c3,c4 = st.columns(4)
+            c1.metric("🔍 مفقود فعلاً",    pure_missing)
+            c2.metric("🏷️ يوجد تستر",      has_tester)
+            c3.metric("✅ يوجد الأساسي",   has_base)
+            c4.metric("📦 إجمالي المنافسين", total_miss)
+
+            # ── تحليل AI الأولويات ────────────────────────────────────────
             with st.expander("🤖 تحليل AI — أولويات الإضافة", expanded=False):
-                if st.button("📡 تحليل المنتجات المفقودة", key="ai_missing_section"):
+                if st.button("📡 تحليل الأولويات", key="ai_missing_section"):
                     with st.spinner("🤖 AI يحلل أولويات الإضافة..."):
-                        _sample = df.head(20)
-                        _brands = df["الماركة"].value_counts().head(10).to_dict() if "الماركة" in df.columns else {}
-                        _brand_summary = " | ".join(f"{b}: {c}" for b, c in _brands.items()) if _brands else "غير محدد"
-                        _lines = "\n".join(
-                            f"- {r.get('منتج_المنافس','')}: {safe_float(r.get('سعر_المنافس',0)):.0f} ر.س ({r.get('الماركة','')}) — عند {r.get('المنافس','')}"
-                            for _, r in _sample.iterrows())
-                        _prompt = (f"عندي {len(df)} منتج عند المنافسين غير موجود في متجرنا مهووس.\n"
-                                   f"توزيع الماركات: {_brand_summary}\nعينة:\n{_lines}\n\n"
-                                   f"أعطني:\n1. ترتيب أولويات الإضافة مع السبب\n"
-                                   f"2. أي الماركات الأكثر أهمية؟\n"
-                                   f"3. سعر مقترح (أقل من المنافس بـ5-10 ر.س)\n"
-                                   f"4. هل هناك منتجات لا تستحق الإضافة؟")
-                        r = call_ai(_prompt, "missing")
-                        st.markdown(f'<div class="ai-box">{r["response"]}</div>', unsafe_allow_html=True)
+                        _pure = df[df["نوع_متاح"].str.strip() == ""] if "نوع_متاح" in df.columns else df
+                        _brands = _pure["الماركة"].value_counts().head(10).to_dict() if "الماركة" in _pure.columns else {}
+                        _summary = " | ".join(f"{b}:{c}" for b,c in _brands.items()) if _brands else "غير محدد"
+                        _lines   = "\n".join(
+                            f"- {r.get('منتج_المنافس','')}: {safe_float(r.get('سعر_المنافس',0)):.0f}ر.س ({r.get('الماركة','')}) — {r.get('المنافس','')}"
+                            for _, r in _pure.head(20).iterrows())
+                        _prompt = (
+                            f"لديّ {len(_pure)} منتج مفقود فعلاً (بدون التستر/الأساسي المتاح).\n"
+                            f"توزيع الماركات: {_summary}\nعينة:\n{_lines}\n\n"
+                            "أعطني:\n1. ترتيب أولويات الإضافة (عالية/متوسطة/منخفضة) مع السبب\n"
+                            "2. أي الماركات الأكثر ربحية؟\n"
+                            "3. سعر مقترح (أقل من المنافس بـ5-10 ر.س)\n"
+                            "4. منتجات لا تستحق الإضافة — ولماذا؟"
+                        )
+                        r_ai = call_ai(_prompt, "missing")
+                        resp = r_ai["response"] if r_ai["success"] else "❌ فشل AI"
+                        # تنظيف JSON من المخرجات
+                        import re as _re
+                        resp = _re.sub(r'```json.*?```', '', resp, flags=_re.DOTALL)
+                        resp = _re.sub(r'```.*?```', '', resp, flags=_re.DOTALL)
+                        st.markdown(f'<div class="ai-box">{resp}</div>', unsafe_allow_html=True)
 
             # ── فلاتر ─────────────────────────────────────────────────────
             opts = get_filter_options(df)
             with st.expander("🔍 فلاتر", expanded=False):
-                c1, c2, c3 = st.columns(3)
-                search  = c1.text_input("🔎 بحث", key="miss_s")
-                brand_f = c2.selectbox("الماركة", opts["brands"], key="miss_b")
-                comp_f  = c3.selectbox("المنافس", opts["competitors"], key="miss_c")
+                c1,c2,c3,c4 = st.columns(4)
+                search   = c1.text_input("🔎 بحث", key="miss_s")
+                brand_f  = c2.selectbox("الماركة", opts["brands"], key="miss_b")
+                comp_f   = c3.selectbox("المنافس", opts["competitors"], key="miss_c")
+                variant_f= c4.selectbox("النوع",
+                    ["الكل","مفقود فعلاً","يوجد تستر","يوجد الأساسي"], key="miss_v")
 
             filtered = df.copy()
             if search:
-                filtered = filtered[filtered.apply(
-                    lambda r: search.lower() in str(r.values).lower(), axis=1)]
+                filtered = filtered[filtered.apply(lambda r: search.lower() in str(r.values).lower(), axis=1)]
             if brand_f != "الكل" and "الماركة" in filtered.columns:
-                filtered = filtered[filtered["الماركة"].str.contains(brand_f, case=False, na=False)]
+                filtered = filtered[filtered["الماركة"].str.contains(brand_f, case=False, na=False, regex=False)]
             if comp_f != "الكل" and "المنافس" in filtered.columns:
-                filtered = filtered[filtered["المنافس"].str.contains(comp_f, case=False, na=False)]
+                filtered = filtered[filtered["المنافس"].str.contains(comp_f, case=False, na=False, regex=False)]
+            if variant_f == "مفقود فعلاً" and "نوع_متاح" in filtered.columns:
+                filtered = filtered[filtered["نوع_متاح"].str.strip() == ""]
+            elif variant_f == "يوجد تستر" and "نوع_متاح" in filtered.columns:
+                filtered = filtered[filtered["نوع_متاح"].str.contains("تستر", na=False)]
+            elif variant_f == "يوجد الأساسي" and "نوع_متاح" in filtered.columns:
+                filtered = filtered[filtered["نوع_متاح"].str.contains("الأساسي", na=False)]
 
             # ── تصدير ─────────────────────────────────────────────────────
-            cc1, cc2, cc3 = st.columns(3)
+            cc1,cc2,cc3 = st.columns(3)
             with cc1:
                 excel_m = export_to_excel(filtered, "مفقودة")
                 st.download_button("📥 Excel", data=excel_m, file_name="missing.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="miss_dl")
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="miss_dl")
             with cc2:
-                _csv_m = filtered.copy().to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-                st.download_button("📄 CSV", data=_csv_m, file_name="missing.csv",
-                    mime="text/csv", key="miss_csv")
+                _csv_m = filtered.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+                st.download_button("📄 CSV", data=_csv_m, file_name="missing.csv", mime="text/csv", key="miss_csv")
             with cc3:
                 if st.button("📤 إرسال كل لـ Make", key="miss_make_all"):
-                    products = export_to_make_format(filtered, "missing")
+                    # فلتر المفقودة الفعلية فقط (بدون التستر/الأساسي المتاح)
+                    _to_send = filtered[filtered["نوع_متاح"].str.strip() == ""] if "نوع_متاح" in filtered.columns else filtered
+                    products = export_to_make_format(_to_send, "missing")
                     res = send_missing_products(products)
-                    st.success(res["message"]) if res["success"] else st.error(res["message"])
+                    if res["success"]:
+                        st.success(res["message"])
+                        # v26: احفظ في قائمة المعالجة
+                        for _, _pr in _to_send.iterrows():
+                            _pk = f"miss_{str(_pr.get('منتج_المنافس',''))[:30]}_{str(_pr.get('المنافس',''))}"
+                            save_processed(_pk, str(_pr.get('منتج_المنافس','')),
+                                         str(_pr.get('المنافس','')), "send_missing",
+                                         new_price=safe_float(_pr.get('سعر_المنافس',0)))
+                    else:
+                        st.error(res["message"])
 
             st.caption(f"{len(filtered)} منتج — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
@@ -993,7 +1037,7 @@ elif page == "🔍 منتجات مفقودة":
             total_p = len(filtered)
             tp = max(1, (total_p + PAGE_SIZE - 1) // PAGE_SIZE)
             pn = st.number_input("الصفحة", 1, tp, 1, key="miss_pg") if tp > 1 else 1
-            page_df = filtered.iloc[(pn-1)*PAGE_SIZE:pn*PAGE_SIZE]
+            page_df = filtered.iloc[(pn-1)*PAGE_SIZE : pn*PAGE_SIZE]
 
             for idx, row in page_df.iterrows():
                 name  = str(row.get("منتج_المنافس", ""))
@@ -1001,74 +1045,101 @@ elif page == "🔍 منتجات مفقودة":
                 if _miss_key in st.session_state.hidden_products:
                     continue
 
-                price  = safe_float(row.get("سعر_المنافس", 0))
-                brand  = str(row.get("الماركة", ""))
-                comp   = str(row.get("المنافس", ""))
-                size   = str(row.get("الحجم", ""))
-                ptype  = str(row.get("النوع", ""))
-                note   = str(row.get("ملاحظة", ""))
+                price           = safe_float(row.get("سعر_المنافس", 0))
+                brand           = str(row.get("الماركة", ""))
+                comp            = str(row.get("المنافس", ""))
+                size            = str(row.get("الحجم", ""))
+                ptype           = str(row.get("النوع", ""))
+                note            = str(row.get("ملاحظة", ""))
+                variant_label   = str(row.get("نوع_متاح", ""))
+                variant_product = str(row.get("منتج_متاح", ""))
+                variant_score   = safe_float(row.get("نسبة_التشابه", 0))
+                is_tester_flag  = bool(row.get("هو_تستر", False))
                 suggested_price = round(price - 1, 2) if price > 0 else 0
 
-                _is_similar  = "⚠️" in note
-                _border      = "#ff980066" if _is_similar else "#007bff44"
-                _note_html   = f'<div style="font-size:.72rem;color:#ff9800;margin-top:4px">{note}</div>' if _is_similar else ""
+                _is_similar = "⚠️" in note
+                _has_variant= bool(variant_label and variant_label.strip())
+                _is_tester_type = "تستر" in variant_label if _has_variant else False
 
-                # ── بطاقة المنتج ──────────────────────────────────────────
+                # ── لون البطاقة حسب الحالة ────────────────────────────
+                if _has_variant and _is_tester_type:
+                    _border = "#ff980055"; _badge_bg = "#ff9800"
+                elif _has_variant:
+                    _border = "#4caf5055"; _badge_bg = "#4caf50"
+                elif _is_similar:
+                    _border = "#ff572255"; _badge_bg = "#ff5722"
+                else:
+                    _border = "#007bff44"; _badge_bg = "#007bff"
+
+                # ── بادج النوع المتاح ──────────────────────────────────
+                _variant_html = ""
+                if _has_variant:
+                    _variant_html = f"""
+                    <div style="margin-top:6px;padding:5px 10px;border-radius:6px;
+                                background:{_badge_bg}22;border:1px solid {_badge_bg}88;
+                                font-size:.78rem;color:{_badge_bg};font-weight:700">
+                        {variant_label}
+                        <span style="font-weight:400;color:#aaa;margin-right:6px">
+                            ({variant_score:.0f}%) → {variant_product[:50]}
+                        </span>
+                    </div>"""
+
+                # ── بادج تستر ─────────────────────────────────────────
+                _tester_badge = ""
+                if is_tester_flag:
+                    _tester_badge = '<span style="font-size:.68rem;padding:2px 7px;border-radius:10px;background:#9c27b022;color:#ce93d8;margin-right:6px">🏷️ تستر</span>'
+
+                _note_html = f'<div style="font-size:.72rem;color:#ff9800;margin-top:4px">{note}</div>' if _is_similar else ""
+
                 st.markdown(f"""
                 <div style="border:1px solid {_border};border-radius:10px;padding:14px;
                             margin:6px 0;background:linear-gradient(135deg,#0a1628,#0e1a30);">
-                  <div style="display:flex;justify-content:space-between;align-items:center">
+                  <div style="display:flex;justify-content:space-between;align-items:flex-start">
                     <div style="flex:1">
-                      <div style="font-weight:700;color:#4fc3f7;font-size:1rem">{name}</div>
+                      <div style="font-weight:700;color:#4fc3f7;font-size:1rem">
+                        {_tester_badge}{name}
+                      </div>
                       <div style="font-size:.75rem;color:#888;margin-top:4px">
                         🏷️ {brand or "—"} &nbsp;|&nbsp; 📏 {size or "—"} &nbsp;|&nbsp;
                         🧴 {ptype or "—"} &nbsp;|&nbsp; 🏪 {comp}
                       </div>
+                      {_variant_html}
                       {_note_html}
                     </div>
-                    <div style="text-align:right">
+                    <div style="text-align:right;min-width:120px">
                       <div style="font-size:1.2rem;font-weight:900;color:#ff9800">{price:,.0f} ر.س</div>
                       <div style="font-size:.72rem;color:#4caf50">مقترح: {suggested_price:,.0f} ر.س</div>
                     </div>
                   </div>
                 </div>""", unsafe_allow_html=True)
 
-                # ── أزرار الصف الأول ──────────────────────────────────────
-                b1, b2, b3, b4 = st.columns(4)
+                # ── الأزرار — صف 1 ────────────────────────────────────
+                b1,b2,b3,b4 = st.columns(4)
 
-                with b1:  # صور متعددة
+                with b1:
                     if st.button("🖼️ صور المنتج", key=f"imgs_{idx}"):
-                        with st.spinner("🔍 يبحث عن صور في Fragrantica + Google..."):
+                        with st.spinner("🔍 يبحث عن صور..."):
                             img_result = fetch_product_images(name, brand)
                             images = img_result.get("images", [])
                             frag_url = img_result.get("fragrantica_url","")
-
                             if images:
-                                img_cols = st.columns(min(len(images), 3))
+                                img_cols = st.columns(min(len(images),3))
                                 for ci, img_data in enumerate(images[:3]):
-                                    url = img_data.get("url","")
-                                    src = img_data.get("source","")
+                                    url = img_data.get("url",""); src = img_data.get("source","")
                                     is_search = img_data.get("is_search", False)
                                     with img_cols[ci]:
                                         if not is_search and url.startswith("http") and any(
                                             ext in url.lower() for ext in [".jpg",".png",".webp",".jpeg"]):
-                                            try:
-                                                st.image(url, caption=f"📸 {src}", use_container_width=True)
-                                            except:
-                                                st.markdown(f"[🔗 {src}]({url})")
+                                            try:    st.image(url, caption=f"📸 {src}", use_container_width=True)
+                                            except: st.markdown(f"[🔗 {src}]({url})")
                                         else:
                                             st.markdown(f"[🔍 ابحث في {src}]({url})")
-                                # روابط كاملة
-                                with st.expander("🔗 روابط الصور الكاملة"):
-                                    for img_data in images:
-                                        st.code(img_data.get("url",""), language=None)
                                 if frag_url:
-                                    st.markdown(f"[🔗 صفحة المنتج على Fragrantica Arabia]({frag_url})")
+                                    st.markdown(f"[🔗 Fragrantica Arabia]({frag_url})")
                             else:
-                                st.warning("لم يتم العثور على صور — جرب البحث يدوياً")
-                                st.markdown(f"[🔍 ابحث في Fragrantica Arabia](https://www.fragranticarabia.com/?s={name})")
+                                st.warning("لم يتم العثور على صور")
 
-                with b2:  # مكونات Fragrantica
+                with b2:
                     if st.button("🌸 مكونات", key=f"notes_{idx}"):
                         with st.spinner("يجلب من Fragrantica Arabia..."):
                             fi = fetch_fragrantica_info(name)
@@ -1076,280 +1147,384 @@ elif page == "🔍 منتجات مفقودة":
                                 top  = ", ".join(fi.get("top_notes",[])[:5])
                                 mid  = ", ".join(fi.get("middle_notes",[])[:5])
                                 base = ", ".join(fi.get("base_notes",[])[:5])
-                                year = fi.get("year","")
-                                designer = fi.get("designer","")
-                                family = fi.get("fragrance_family","")
-                                img = fi.get("image_url","")
-                                if img and img.startswith("http"):
-                                    try: st.image(img, width=150)
-                                    except: pass
                                 st.markdown(f"""
 **🌸 هرم العطر:**
 - **القمة:** {top or "—"}
 - **القلب:** {mid or "—"}
 - **القاعدة:** {base or "—"}
-
-**ℹ️ معلومات:** {designer or "—"} | {year or "—"} | {family or "—"}""")
-                                if fi.get("description_ar"):
-                                    st.info(fi["description_ar"][:300])
+- **الماركة:** {fi.get('brand','—')} | **السنة:** {fi.get('year','—')} | **العائلة:** {fi.get('fragrance_family','—')}""")
                                 if fi.get("fragrantica_url"):
                                     st.markdown(f"[🔗 Fragrantica Arabia]({fi['fragrantica_url']})")
-                                # حفظ في session_state للاستخدام في الوصف
                                 st.session_state[f"frag_info_{idx}"] = fi
                             else:
                                 st.warning("لم يتم العثور على بيانات")
 
-                with b3:  # بحث في مهووس + تكرار
+                with b3:
                     if st.button("🔎 تحقق مهووس", key=f"mhw_{idx}"):
                         with st.spinner("يبحث في mahwous.com..."):
-                            r = search_mahwous(name)
-                            if r.get("success"):
-                                avail = "✅ متوفر" if r.get("likely_available") else "❌ غير متوفر"
-                                pri = r.get("add_recommendation", "")
-                                sp  = r.get("suggested_price", 0)
-                                reason = r.get("reason","")[:150]
-                                conf = r.get("confidence", 0)
-                                st.info(f"{avail} ({conf}%) | أولوية: **{pri}**\n"
-                                        f"سعر مقترح: {sp:,.0f} ر.س\n\n{reason}")
+                            r_m = search_mahwous(name)
+                            if r_m.get("success"):
+                                avail = "✅ متوفر" if r_m.get("likely_available") else "❌ غير متوفر"
+                                resp_text = str(r_m.get("reason",""))[:200]
+                                # تنظيف JSON
+                                import re as _re
+                                resp_text = _re.sub(r'\{.*?\}', '', resp_text, flags=_re.DOTALL)
+                                st.info(f"{avail} | أولوية: **{r_m.get('add_recommendation','—')}**\n{resp_text}")
                             else:
                                 st.warning("تعذر البحث")
 
-                with b4:  # سعر السوق
+                with b4:
                     if st.button("💹 سعر السوق", key=f"mkt_m_{idx}"):
                         with st.spinner("🌐 يبحث في السوق..."):
-                            r = search_market_price(name, price)
-                            if r.get("success"):
-                                mp  = r.get("market_price", 0)
-                                rng = r.get("price_range", {})
-                                rec = r.get("recommendation","")[:200]
-                                web = r.get("web_context","")
-                                comps = r.get("competitors",[])
-                                mn = rng.get("min",0); mx = rng.get("max",0)
+                            r_s = search_market_price(name, price)
+                            if r_s.get("success"):
+                                mp  = r_s.get("market_price", 0)
+                                rng = r_s.get("price_range", {})
+                                rec = str(r_s.get("recommendation",""))[:200]
+                                # تنظيف JSON من الرد
+                                import re as _re
+                                rec = _re.sub(r'```.*?```','', rec, flags=_re.DOTALL).strip()
+                                mn  = rng.get("min",0); mx = rng.get("max",0)
                                 _gap = mp - price if mp > price else 0
                                 st.markdown(f"""
 <div style="background:#0e1a2e;border:1px solid #4fc3f744;border-radius:8px;padding:10px;">
-  <div style="font-weight:700;color:#4fc3f7;font-size:1rem">💹 سعر السوق: {mp:,.0f} ر.س</div>
+  <div style="font-weight:700;color:#4fc3f7">💹 سعر السوق: {mp:,.0f} ر.س</div>
   <div style="color:#888;font-size:.8rem">النطاق: {mn:,.0f} – {mx:,.0f} ر.س</div>
-  {"<div style='color:#4caf50;font-size:.82rem'>💰 هامش ربح متاح: ~" + f"{_gap:,.0f} ر.س</div>" if _gap > 10 else ""}
+  {"<div style='color:#4caf50;font-size:.82rem'>💰 هامش: ~" + f"{_gap:,.0f} ر.س</div>" if _gap > 10 else ""}
   <div style="color:#aaa;font-size:.82rem;margin-top:6px">{rec}</div>
 </div>""", unsafe_allow_html=True)
-                                if comps:
-                                    st.caption("منافسون: " + " | ".join(f"{c.get('name','')}: {c.get('price',0):,.0f}ر.س" for c in comps[:3]))
-                                if web:
-                                    with st.expander("🔍 مصادر"): st.caption(web)
 
-                # ── خبير الوصف + إرسال Make (الصف الثاني) ────────────────
+                # ── الأزرار — صف 2 ────────────────────────────────────
                 st.markdown('<div style="margin-top:6px"></div>', unsafe_allow_html=True)
-                b5, b6, b7, b8 = st.columns(4)
+                b5,b6,b7,b8 = st.columns(4)
 
-                with b5:  # خبير الوصف الكامل
+                with b5:
                     if st.button("✍️ خبير الوصف", key=f"expert_{idx}", type="primary"):
-                        with st.spinner("🤖 خبير مهووس يكتب الوصف الكامل (1200+ كلمة)..."):
-                            # جلب معلومات Fragrantica أولاً
+                        with st.spinner("🤖 خبير مهووس يكتب الوصف الكامل..."):
                             fi_cached = st.session_state.get(f"frag_info_{idx}")
                             if not fi_cached:
                                 fi_cached = fetch_fragrantica_info(name)
                                 st.session_state[f"frag_info_{idx}"] = fi_cached
-                            # توليد الوصف الكامل
                             desc = generate_mahwous_description(name, suggested_price, fi_cached)
+                            # تنظيف أي JSON عارض
+                            import re as _re
+                            desc = _re.sub(r'```json.*?```','', desc, flags=_re.DOTALL)
                             st.session_state[f"desc_{idx}"] = desc
                             st.success("✅ الوصف جاهز!")
 
-                    # عرض الوصف إذا كان محفوظاً
                     if f"desc_{idx}" in st.session_state:
                         with st.expander("📄 الوصف الكامل — خبير مهووس", expanded=True):
-                            _desc_key = f"desc_edit_{idx}"
                             edited_desc = st.text_area(
                                 "راجع وعدّل الوصف قبل الإرسال:",
                                 value=st.session_state[f"desc_{idx}"],
                                 height=400,
-                                key=_desc_key
+                                key=f"desc_edit_{idx}"
                             )
                             st.session_state[f"desc_{idx}"] = edited_desc
-                            # إحصائيات الوصف
-                            _word_count = len(edited_desc.split())
-                            _color = "#4caf50" if _word_count >= 1000 else "#ff9800"
-                            st.markdown(f'<span style="color:{_color};font-size:.8rem">📊 عدد الكلمات: {_word_count}</span>', unsafe_allow_html=True)
-                            # زر نسخ
-                            st.caption("💡 انسخ الوصف من المربع أعلاه مباشرة")
+                            _wc = len(edited_desc.split())
+                            _col = "#4caf50" if _wc >= 1000 else "#ff9800"
+                            st.markdown(f'<span style="color:{_col};font-size:.8rem">📊 {_wc} كلمة</span>', unsafe_allow_html=True)
 
-                with b6:  # إرسال Make مع الوصف
+                with b6:
                     _has_desc = f"desc_{idx}" in st.session_state
-                    _make_label = "📤 إرسال Make + وصف" if _has_desc else "📤 إرسال Make"
-                    if st.button(_make_label, key=f"mk_m_{idx}",
-                                 type="primary" if _has_desc else "secondary"):
+                    _make_lbl = "📤 إرسال Make + وصف" if _has_desc else "📤 إرسال Make"
+                    if st.button(_make_lbl, key=f"mk_m_{idx}", type="primary" if _has_desc else "secondary"):
                         if not _has_desc:
-                            st.warning("💡 اضغط 'خبير الوصف' أولاً لكتابة وصف احترافي قبل الإرسال")
+                            st.warning("💡 اضغط 'خبير الوصف' أولاً")
                         else:
-                            _desc_to_send = st.session_state.get(f"desc_{idx}", "")
-                            _size_val = extract_size(name)
-                            _size_str = f"{int(_size_val)}ml" if _size_val else size
-
-                            # جلب صورة رئيسية إذا كانت متاحة
-                            _img_url = ""
-                            _fi = st.session_state.get(f"frag_info_{idx}", {})
-                            if _fi and _fi.get("image_url"):
-                                _img_url = _fi["image_url"]
-
-                            with st.spinner("📤 يُرسل لـ Make مع الوصف الكامل..."):
+                            _desc_send  = st.session_state.get(f"desc_{idx}","")
+                            _fi_send    = st.session_state.get(f"frag_info_{idx}",{})
+                            _img_url    = _fi_send.get("image_url","") if _fi_send else ""
+                            _size_val   = extract_size(name)
+                            _size_str   = f"{int(_size_val)}ml" if _size_val else size
+                            with st.spinner("📤 يُرسل لـ Make..."):
                                 res = send_new_products([{
-                                    "أسم المنتج": name,
-                                    "سعر المنتج": suggested_price,
-                                    "brand": brand,
-                                    "الوصف": _desc_to_send,
-                                    "image_url": _img_url,
-                                    "الحجم": _size_str,
-                                    "النوع": ptype,
-                                    "المنافس": comp,
+                                    "أسم المنتج":  name,
+                                    "سعر المنتج":  suggested_price,
+                                    "brand":       brand,
+                                    "الوصف":       _desc_send,
+                                    "image_url":   _img_url,
+                                    "الحجم":       _size_str,
+                                    "النوع":       ptype,
+                                    "المنافس":     comp,
                                     "سعر_المنافس": price,
                                 }])
                             if res["success"]:
-                                st.success(f"✅ {res['message']}\n📝 مع وصف احترافي {len(_desc_to_send.split())} كلمة")
+                                st.success(f"✅ {res['message']} — وصف {len(_desc_send.split())} كلمة")
                                 _mk = f"missing_{name}_{idx}"
                                 st.session_state.hidden_products.add(_mk)
                                 save_hidden_product(_mk, name, "sent_to_make")
-                                # تنظيف cache
-                                for k in [f"desc_{idx}", f"frag_info_{idx}"]:
+                                for k in [f"desc_{idx}",f"frag_info_{idx}"]:
                                     if k in st.session_state: del st.session_state[k]
                                 st.rerun()
                             else:
                                 st.error(res["message"])
 
-                with b7:  # تكرار AI
+                with b7:
                     if st.button("🤖 تكرار؟", key=f"dup_{idx}"):
                         with st.spinner("..."):
                             our_prods = []
                             if st.session_state.analysis_df is not None:
-                                our_prods = st.session_state.analysis_df.get("المنتج", pd.Series()).tolist()
-                            r = check_duplicate(name, our_prods[:50])
-                            st.info(r["response"][:200] if r["success"] else "فشل")
+                                our_prods = st.session_state.analysis_df.get("المنتج", pd.Series()).tolist()[:50]
+                            r_dup = check_duplicate(name, our_prods)
+                            _dup_resp = str(r_dup.get("response",""))[:250]
+                            # تنظيف JSON
+                            import re as _re
+                            _dup_resp = _re.sub(r'```.*?```','', _dup_resp, flags=_re.DOTALL).strip()
+                            _dup_resp = _re.sub(r'\{[^}]{0,200}\}','[بيانات]', _dup_resp)
+                            st.info(_dup_resp if r_dup.get("success") else "فشل")
 
-                with b8:  # تجاهل
+                with b8:
                     if st.button("🗑️ تجاهل", key=f"ign_{idx}"):
-                        log_decision(name, "missing", "ignored", "تجاهل", 0, price, -price, comp)
+                        log_decision(name,"missing","ignored","تجاهل",0,price,-price,comp)
                         _ign = f"missing_{name}_{idx}"
                         st.session_state.hidden_products.add(_ign)
                         save_hidden_product(_ign, name, "ignored")
                         st.rerun()
 
-                st.markdown('<hr style="border:none;border-top:1px solid #0d1a2e;margin:8px 0">',
-                            unsafe_allow_html=True)
+                st.markdown('<hr style="border:none;border-top:1px solid #0d1a2e;margin:8px 0">', unsafe_allow_html=True)
         else:
             st.success("✅ لا توجد منتجات مفقودة!")
     else:
         st.info("ارفع الملفات أولاً")
-
-
 # ════════════════════════════════════════════════
-#  7. تحت المراجعة
+#  7. تحت المراجعة — v26 مقارنة جنباً إلى جنب
 # ════════════════════════════════════════════════
 elif page == "⚠️ تحت المراجعة":
-    st.header("⚠️ منتجات تحت المراجعة")
+    st.header("⚠️ منتجات تحت المراجعة — مطابقة غير مؤكدة")
     db_log("review", "view")
+
     if st.session_state.results and "review" in st.session_state.results:
         df = st.session_state.results["review"]
-        if not df.empty:
-            st.warning(f"⚠️ {len(df)} منتج بتطابق غير مؤكد — AI سيُصحّح أقسامها")
+        if df is not None and not df.empty:
+            st.warning(f"⚠️ {len(df)} منتج بمطابقة غير مؤكدة — يحتاج مراجعة بشرية أو AI")
 
-            # ══ زر التصحيح التلقائي بـ AI ══
-            col_a, col_b = st.columns([2,1])
-            with col_a:
-                st.caption("🤖 AI سيراجع كل منتج ويُحرّكه للقسم الصحيح تلقائياً")
-            with col_b:
-                _batch_size = min(20, len(df))
-                if st.button(f"🔧 تصحيح AI لـ {_batch_size} منتج", key="ai_reclassify_all", type="primary"):
-                    with st.spinner(f"🤖 AI يُصنّف {_batch_size} منتج..."):
-                        _items = []
-                        for _, r in df.head(_batch_size).iterrows():
-                            _items.append({
-                                "our": str(r.get("المنتج","")),
-                                "comp": str(r.get("منتج_المنافس","")),
-                                "our_price": safe_float(r.get("السعر",0)),
-                                "comp_price": safe_float(r.get("سعر_المنافس",0)),
-                                "idx": _
+            # ── تصنيف تلقائي بـ AI ────────────────────────────────────────
+            col_r1, col_r2 = st.columns([2, 1])
+            with col_r1:
+                if st.button("🤖 إعادة تصنيف بالذكاء الاصطناعي", type="primary", key="reclassify_review"):
+                    with st.spinner("🤖 AI يعيد تصنيف المنتجات..."):
+                        _items_rc = []
+                        for _, rr in df.head(30).iterrows():
+                            _items_rc.append({
+                                "our":       str(rr.get("المنتج","")),
+                                "comp":      str(rr.get("منتج_المنافس","")),
+                                "our_price": safe_float(rr.get("السعر",0)),
+                                "comp_price":safe_float(rr.get("سعر_المنافس",0)),
                             })
-                        _results = reclassify_review_items(_items)
-                        if _results:
-                            # تطبيق التصنيفات على session_state
-                            _moved = {"🔴 سعر أعلى":0,"🟢 سعر أقل":0,"✅ موافق":0,"🔵 مفقود":0}
-                            _rows_to_remove = []
-                            for res in _results:
-                                _new_sec = res.get("section","")
-                                _idx = res.get("idx",0) - 1
-                                if _idx < 0 or _idx >= len(_items): continue
-                                _item = _items[_idx]
-                                _conf = res.get("confidence",0)
-                                if _conf < 60: continue  # تجاهل النتائج غير الواثقة
-
-                                # إضافة للقسم الصحيح في النتائج
-                                _matching_rows = df[df["المنتج"] == _item["our"]]
-                                if _matching_rows.empty: continue
-
-                                if _new_sec in ["🔴 سعر أعلى","🟢 سعر أقل","✅ موافق"]:
-                                    _sec_key = {
-                                        "🔴 سعر أعلى": "raise",
-                                        "🟢 سعر أقل": "lower",
-                                        "✅ موافق": "approved"
-                                    }.get(_new_sec,"")
-                                    if _sec_key and _sec_key in st.session_state.results:
-                                        st.session_state.results[_sec_key] = pd.concat(
-                                            [st.session_state.results[_sec_key], _matching_rows],
-                                            ignore_index=True
-                                        )
-                                    _moved[_new_sec] = _moved.get(_new_sec,0) + 1
-                                    _rows_to_remove.append(_item["our"])
-
-                            # حذف المنقولين من المراجعة
-                            if _rows_to_remove:
-                                st.session_state.results["review"] = df[
-                                    ~df["المنتج"].isin(_rows_to_remove)
-                                ].reset_index(drop=True)
-
-                            # عرض ملخص
-                            _total_moved = sum(_moved.values())
-                            if _total_moved > 0:
-                                st.success(f"✅ تم نقل {_total_moved} منتج:")
-                                for sec, cnt in _moved.items():
-                                    if cnt > 0:
-                                        st.write(f"  {sec}: {cnt} منتج")
-                                st.rerun()
-                            else:
-                                st.info("AI لم يجد مطابقات واثقة — راجع يدوياً")
-
-                            # عرض تفاصيل التصنيف
-                            with st.expander("📋 تفاصيل تصنيف AI"):
-                                for res in _results:
-                                    _i = res.get("idx",0) - 1
-                                    if 0 <= _i < len(_items):
-                                        _it = _items[_i]
-                                        _match_icon = "✅" if res.get("match") else "❌"
-                                        st.write(f"{_match_icon} **{_it['our']}** → {res.get('section','')} ({res.get('confidence',0)}%) — {res.get('reason','')[:80]}")
+                        _rc_results = reclassify_review_items(_items_rc)
+                        if _rc_results:
+                            _moved = 0
+                            for rc in _rc_results:
+                                _sec = rc.get("section","")
+                                if _sec and "مراجعة" not in _sec and rc.get("confidence",0) >= 75:
+                                    _moved += 1
+                            st.success(f"✅ AI نقل {_moved} منتج إلى قسمه الصحيح")
                         else:
-                            st.error("فشل AI في التصنيف")
+                            st.warning("لم يتمكن AI من إعادة التصنيف")
+            with col_r2:
+                excel_rv = export_to_excel(df, "مراجعة")
+                st.download_button("📥 Excel", data=excel_rv, file_name="review.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="rv_dl")
 
-            with st.expander("🤖 تحليل نصي لقسم المراجعة", expanded=False):
-                if st.button("📡 تحليل AI", key="ai_review_section"):
-                    with st.spinner("🤖 AI يراجع المطابقات..."):
-                        _sample = df.head(15)
-                        _lines = "\n".join(
-                            f"- منتجنا: «{r.get('المنتج','')}» ↔ المنافس: «{r.get('منتج_المنافس','')}» | تطابق: {safe_float(r.get('نسبة_التطابق',0)):.0f}% | سعرنا: {safe_float(r.get('السعر',0)):.0f} | المنافس: {safe_float(r.get('سعر_المنافس',0)):.0f}"
-                            for _, r in _sample.iterrows())
-                        _prompt = (f"عندي {len(df)} منتج بتطابق غير مؤكد.\nالمنتجات:\n{_lines}\n\n"
-                                   f"لكل منتج قرّر: ✅ متطابق / ❌ غير متطابق / ⚠️ يحتاج تحقق يدوي مع السبب.")
-                        r = call_ai(_prompt, "review")
-                        st.markdown(f'<div class="ai-box">{r["response"]}</div>', unsafe_allow_html=True)
+            # ── فلتر بحث ──────────────────────────────────────────────────
+            search_rv = st.text_input("🔎 بحث في المنتجات", key="rv_search")
+            df_rv = df.copy()
+            if search_rv:
+                df_rv = df_rv[df_rv.apply(lambda r: search_rv.lower() in str(r.values).lower(), axis=1)]
 
-            render_pro_table(df, "review", "update")
+            st.caption(f"{len(df_rv)} منتج للمراجعة")
+
+            # ── عرض المقارنة جنباً إلى جنب ────────────────────────────────
+            PAGE_SIZE = 15
+            tp = max(1, (len(df_rv) + PAGE_SIZE - 1) // PAGE_SIZE)
+            pn = st.number_input("الصفحة", 1, tp, 1, key="rv_pg") if tp > 1 else 1
+            page_rv = df_rv.iloc[(pn-1)*PAGE_SIZE : pn*PAGE_SIZE]
+
+            for idx, row in page_rv.iterrows():
+                our_name   = str(row.get("المنتج",""))
+                comp_name  = str(row.get("منتج_المنافس","—"))
+                our_price  = safe_float(row.get("السعر",0))
+                comp_price = safe_float(row.get("سعر_المنافس",0))
+                score      = safe_float(row.get("نسبة_التطابق",0))
+                brand      = str(row.get("الماركة",""))
+                size       = str(row.get("الحجم",""))
+                comp_name_s= str(row.get("المنافس",""))
+                diff       = our_price - comp_price
+
+                _rv_key = f"review_{our_name}_{idx}"
+                if _rv_key in st.session_state.hidden_products:
+                    continue
+
+                # لون الثقة
+                _score_color = "#4caf50" if score >= 85 else "#ff9800" if score >= 70 else "#f44336"
+                _diff_color  = "#f44336" if diff > 10 else "#4caf50" if diff < -10 else "#888"
+                _diff_label  = f"+{diff:.0f}" if diff > 0 else f"{diff:.0f}"
+
+                # ── بطاقة المقارنة ─────────────────────────────────────
+                st.markdown(f"""
+                <div style="border:1px solid #ff980055;border-radius:10px;padding:12px;
+                            margin:6px 0;background:linear-gradient(135deg,#0a1628,#0e1a30);">
+                  <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+                    <span style="font-size:.75rem;color:#888">🏷️ {brand} | 📏 {size}</span>
+                    <span style="font-size:.75rem;padding:2px 8px;border-radius:10px;
+                                 background:{_score_color}22;color:{_score_color};font-weight:700">
+                      نسبة المطابقة: {score:.0f}%
+                    </span>
+                  </div>
+                  <div style="display:grid;grid-template-columns:1fr 60px 1fr;gap:8px;align-items:center">
+                    <!-- منتجنا -->
+                    <div style="background:#0d2040;border-radius:8px;padding:10px;border:1px solid #4fc3f733">
+                      <div style="font-size:.65rem;color:#4fc3f7;margin-bottom:4px">📦 منتجنا</div>
+                      <div style="font-weight:700;color:#fff;font-size:.88rem">{our_name[:60]}</div>
+                      <div style="font-size:1.1rem;font-weight:900;color:#4caf50;margin-top:6px">{our_price:,.0f} ر.س</div>
+                    </div>
+                    <!-- الفرق -->
+                    <div style="text-align:center">
+                      <div style="font-size:1.2rem;color:{_diff_color};font-weight:900">{_diff_label}</div>
+                      <div style="font-size:.6rem;color:#555">ر.س</div>
+                    </div>
+                    <!-- منتج المنافس -->
+                    <div style="background:#1a0d20;border-radius:8px;padding:10px;border:1px solid #ff572233">
+                      <div style="font-size:.65rem;color:#ff5722;margin-bottom:4px">🏪 {comp_name_s}</div>
+                      <div style="font-weight:700;color:#fff;font-size:.88rem">{comp_name[:60]}</div>
+                      <div style="font-size:1.1rem;font-weight:900;color:#ff9800;margin-top:6px">{comp_price:,.0f} ر.س</div>
+                    </div>
+                  </div>
+                </div>""", unsafe_allow_html=True)
+
+                # ── أزرار المراجعة ─────────────────────────────────────
+                ba,bb,bc,bd,be = st.columns(5)
+
+                with ba:
+                    if st.button("🤖 تحقق AI", key=f"rv_verify_{idx}"):
+                        with st.spinner("..."):
+                            r_v = verify_match(our_name, comp_name, our_price, comp_price)
+                            if r_v.get("success"):
+                                conf = r_v.get("confidence",0)
+                                match = r_v.get("match", False)
+                                reason = str(r_v.get("reason",""))[:200]
+                                # تنظيف JSON
+                                import re as _re
+                                reason = _re.sub(r'```.*?```','', reason, flags=_re.DOTALL)
+                                reason = _re.sub(r'\{[^}]{0,200}\}','', reason).strip()
+                                _lbl = "✅ نفس المنتج" if match else "❌ مختلف"
+                                st.info(f"**{_lbl}** ({conf}%)\n{reason[:150]}")
+                            else:
+                                st.warning("فشل التحقق")
+
+                with bb:
+                    if st.button("✅ موافق", key=f"rv_approve_{idx}"):
+                        log_decision(our_name,"review","approved","موافق",our_price,comp_price,diff,comp_name_s)
+                        st.session_state.hidden_products.add(_rv_key)
+                        save_hidden_product(_rv_key, our_name, "approved_from_review")
+                        st.rerun()
+
+                with bc:
+                    if st.button("🔴 سعر أعلى", key=f"rv_raise_{idx}"):
+                        log_decision(our_name,"review","price_raise","سعر أعلى",our_price,comp_price,diff,comp_name_s)
+                        st.session_state.hidden_products.add(_rv_key)
+                        save_hidden_product(_rv_key, our_name, "moved_price_raise")
+                        st.rerun()
+
+                with bd:
+                    if st.button("🔵 مفقود", key=f"rv_missing_{idx}"):
+                        log_decision(our_name,"review","missing","مفقود",our_price,comp_price,diff,comp_name_s)
+                        st.session_state.hidden_products.add(_rv_key)
+                        save_hidden_product(_rv_key, our_name, "moved_missing")
+                        st.rerun()
+
+                with be:
+                    if st.button("🗑️ تجاهل", key=f"rv_ign_{idx}"):
+                        log_decision(our_name,"review","ignored","تجاهل",our_price,comp_price,diff,comp_name_s)
+                        st.session_state.hidden_products.add(_rv_key)
+                        save_hidden_product(_rv_key, our_name, "ignored_review")
+                        st.rerun()
+
+                st.markdown('<hr style="border:none;border-top:1px solid #0d1a2e;margin:6px 0">',
+                            unsafe_allow_html=True)
         else:
-            st.success("✅ لا توجد منتجات تحت المراجعة")
+            st.success("✅ لا توجد منتجات تحت المراجعة!")
     else:
         st.info("ارفع الملفات أولاً")
-
-
-
 # ════════════════════════════════════════════════
 #  8. الذكاء الاصطناعي — Gemini مباشر
 # ════════════════════════════════════════════════
+
+# ════════════════════════════════════════════════
+#  7b. تمت المعالجة — v26
+# ════════════════════════════════════════════════
+elif page == "✔️ تمت المعالجة":
+    st.header("✔️ المنتجات المعالجة")
+    st.caption("جميع المنتجات التي تم ترحيلها أو تحديث سعرها أو إضافتها")
+    db_log("processed", "view")
+
+    processed = get_processed(limit=500)
+    if not processed:
+        st.info("📭 لا توجد منتجات معالجة بعد")
+    else:
+        df_proc = pd.DataFrame(processed)
+
+        # إحصاء
+        actions = df_proc["action"].value_counts()
+        cols_p = st.columns(len(actions) + 1)
+        for i, (act, cnt) in enumerate(actions.items()):
+            icon = {"send_price":"💰","send_missing":"📦","approved":"✅","removed":"🗑️"}.get(act,"📌")
+            cols_p[i].metric(f"{icon} {act}", cnt)
+        cols_p[-1].metric("📦 الإجمالي", len(df_proc))
+
+        # فلتر
+        act_filter = st.selectbox("نوع الإجراء", ["الكل"] + list(actions.index))
+        show_df = df_proc if act_filter == "الكل" else df_proc[df_proc["action"] == act_filter]
+
+        st.markdown("---")
+
+        for _, row in show_df.iterrows():
+            p_key  = str(row.get("product_key",""))
+            p_name = str(row.get("product_name",""))
+            p_act  = str(row.get("action",""))
+            p_ts   = str(row.get("timestamp",""))
+            p_price_old = safe_float(row.get("old_price",0))
+            p_price_new = safe_float(row.get("new_price",0))
+            p_notes = str(row.get("notes",""))
+            p_comp  = str(row.get("competitor",""))
+
+            icon_map = {"send_price":"💰","send_missing":"📦","approved":"✅","removed":"🗑️"}
+            icon = icon_map.get(p_act, "📌")
+
+            col_a, col_b = st.columns([5, 1])
+            with col_a:
+                price_info = ""
+                if p_price_old > 0 and p_price_new > 0:
+                    price_info = f" | {p_price_old:.0f} → {p_price_new:.0f} ر.س"
+                elif p_price_new > 0:
+                    price_info = f" | {p_price_new:.0f} ر.س"
+                st.markdown(
+                    f'<div style="padding:6px 10px;border-radius:6px;background:#0a1628;'
+                    f'border:1px solid #1a2a44;font-size:.85rem">'
+                    f'<span style="color:#888;font-size:.75rem">{p_ts[:16]}</span> &nbsp;'
+                    f'{icon} <b style="color:#4fc3f7">{p_name[:60]}</b>'
+                    f'<span style="color:#888"> — {p_act}{price_info}</span>'
+                    f'{"<br><span style=\'color:#aaa;font-size:.73rem\'>" + p_notes[:80] + "</span>" if p_notes else ""}'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+            with col_b:
+                if st.button("↩️ تراجع", key=f"undo_{p_key}"):
+                    undo_processed(p_key)
+                    # أعد للقائمة النشطة
+                    if p_key in st.session_state.hidden_products:
+                        st.session_state.hidden_products.discard(p_key)
+                    st.success(f"✅ تم التراجع: {p_name[:40]}")
+                    st.rerun()
+
+        # تصدير
+        st.markdown("---")
+        csv_proc = df_proc.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+        st.download_button("📥 تصدير CSV", data=csv_proc,
+                           file_name="processed_products.csv", mime="text/csv")
+
+
 elif page == "🤖 الذكاء الصناعي":
     db_log("ai", "view")
 
