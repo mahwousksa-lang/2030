@@ -12,7 +12,7 @@ engines/ai_engine.py v24.0 — خبير مهووس الكامل
 import requests, json, re, time, traceback
 from config import GEMINI_API_KEYS, OPENROUTER_API_KEY, COHERE_API_KEY
 
-_GM  = "gemini-2.0-flash"
+_GM  = "gemini-1.5-flash"
 _GU  = f"https://generativelanguage.googleapis.com/v1beta/models/{_GM}:generateContent"
 _OR  = "https://openrouter.ai/api/v1/chat/completions"
 _CO  = "https://api.cohere.ai/v1/generate"

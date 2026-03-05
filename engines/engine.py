@@ -637,7 +637,7 @@ class CompIndex:
 # ═══════════════════════════════════════════════════════
 #  AI Batch — Gemini + OpenRouter fallback
 # ═══════════════════════════════════════════════════════
-_GURL    = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+_GURL    = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
 _OR_URL  = "https://openrouter.ai/api/v1/chat/completions"
 _OR_FREE = [
     "meta-llama/llama-3.3-70b-instruct:free",
