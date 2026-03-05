@@ -384,3 +384,208 @@ def get_hidden_product_keys() -> set:
 
 
 init_db()
+
+
+# ═══════════════════════════════════════════════════════════════
+#  v26 — Upsert Catalog + Processed Products
+# ═══════════════════════════════════════════════════════════════
+
+def init_db_v26(conn=None):
+    """إضافة جداول v26 للـ upsert ومتابعة المنتجات المعالجة"""
+    c_conn = conn or get_db()
+    cur = c_conn.cursor()
+
+    # كتالوج مؤقت للمنافسين (يُحدَّث يومياً)
+    cur.execute("""CREATE TABLE IF NOT EXISTS comp_catalog (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        competitor TEXT NOT NULL,
+        product_name TEXT NOT NULL,
+        norm_name TEXT,
+        price REAL,
+        first_seen TEXT,
+        last_seen TEXT,
+        UNIQUE(competitor, norm_name)
+    )""")
+
+    # كتالوج متجرنا (يُحدَّث يومياً)
+    cur.execute("""CREATE TABLE IF NOT EXISTS our_catalog (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        product_id TEXT UNIQUE,
+        product_name TEXT NOT NULL,
+        norm_name TEXT,
+        price REAL,
+        first_seen TEXT,
+        last_seen TEXT
+    )""")
+
+    # المنتجات المعالجة (ترحيل/تسعير/إضافة)
+    cur.execute("""CREATE TABLE IF NOT EXISTS processed_products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT,
+        product_key TEXT UNIQUE,
+        product_name TEXT,
+        competitor TEXT,
+        action TEXT,
+        old_price REAL,
+        new_price REAL,
+        product_id TEXT,
+        notes TEXT
+    )""")
+
+    c_conn.commit()
+    if not conn:
+        c_conn.close()
+
+
+def upsert_our_catalog(our_df, name_col="اسم المنتج", id_col="رقم المنتج", price_col="السعر"):
+    """يُحدِّث كتالوج متجرنا عند كل رفع جديد — بدون تكرار"""
+    import re
+    conn = get_db()
+    today = datetime.now().strftime("%Y-%m-%d")
+    rows_updated = 0
+    rows_inserted = 0
+
+    for _, row in our_df.iterrows():
+        name = str(row.get(name_col, "")).strip()
+        if not name:
+            continue
+        norm = re.sub(r'\s+', ' ', name.lower().strip())
+        pid  = str(row.get(id_col, "")).strip().rstrip(".0")
+        try:
+            price = float(str(row.get(price_col, 0)).replace(",", ""))
+        except Exception:
+            price = 0.0
+
+        existing = conn.execute(
+            "SELECT id, price FROM our_catalog WHERE product_id=? OR norm_name=?",
+            (pid, norm)
+        ).fetchone()
+
+        if existing:
+            conn.execute(
+                "UPDATE our_catalog SET price=?, last_seen=?, norm_name=? WHERE id=?",
+                (price, today, norm, existing[0])
+            )
+            rows_updated += 1
+        else:
+            conn.execute(
+                """INSERT INTO our_catalog (product_id, product_name, norm_name, price, first_seen, last_seen)
+                   VALUES (?,?,?,?,?,?)""",
+                (pid, name, norm, price, today, today)
+            )
+            rows_inserted += 1
+
+    conn.commit()
+    conn.close()
+    return {"updated": rows_updated, "inserted": rows_inserted}
+
+
+def upsert_comp_catalog(comp_dfs: dict):
+    """يُحدِّث كتالوج المنافسين عند كل رفع جديد — بدون تكرار"""
+    import re
+    conn = get_db()
+    today = datetime.now().strftime("%Y-%m-%d")
+    total_new = 0
+
+    for cname, cdf in comp_dfs.items():
+        # استكشاف الأعمدة
+        cols = list(cdf.columns)
+        name_col  = None
+        price_col = None
+        for c in cols:
+            sample = str(cdf[c].dropna().iloc[0]) if not cdf[c].dropna().empty else ""
+            try:
+                float(sample.replace(",",""))
+                if price_col is None:
+                    price_col = c
+            except Exception:
+                if name_col is None and len(sample) > 5:
+                    name_col = c
+
+        if name_col is None:
+            name_col = cols[0]
+        if price_col is None:
+            price_col = cols[1] if len(cols) > 1 else cols[0]
+
+        for _, row in cdf.iterrows():
+            name = str(row.get(name_col, "")).strip()
+            if not name or len(name) < 4 or name.startswith("styles_"):
+                continue
+            norm = re.sub(r'\s+', ' ', name.lower().strip())
+            try:
+                price = float(str(row.get(price_col, 0)).replace(",", ""))
+            except Exception:
+                price = 0.0
+
+            existing = conn.execute(
+                "SELECT id FROM comp_catalog WHERE competitor=? AND norm_name=?",
+                (cname, norm)
+            ).fetchone()
+
+            if existing:
+                conn.execute(
+                    "UPDATE comp_catalog SET price=?, last_seen=? WHERE id=?",
+                    (price, today, existing[0])
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO comp_catalog (competitor, product_name, norm_name, price, first_seen, last_seen)
+                       VALUES (?,?,?,?,?,?)""",
+                    (cname, name, norm, price, today, today)
+                )
+                total_new += 1
+
+    conn.commit()
+    conn.close()
+    return {"new_products": total_new}
+
+
+def save_processed(product_key: str, product_name: str, competitor: str,
+                   action: str, old_price=0.0, new_price=0.0,
+                   product_id="", notes=""):
+    """يحفظ منتجاً في قائمة المعالجة — مع منع التكرار"""
+    conn = get_db()
+    conn.execute(
+        """INSERT OR REPLACE INTO processed_products
+           (timestamp, product_key, product_name, competitor, action,
+            old_price, new_price, product_id, notes)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (_ts(), product_key, product_name, competitor, action,
+         old_price, new_price, product_id, notes)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_processed(limit=200) -> list:
+    """يُعيد قائمة المنتجات المعالجة"""
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT timestamp, product_key, product_name, competitor,
+                  action, old_price, new_price, product_id, notes
+           FROM processed_products ORDER BY timestamp DESC LIMIT ?""",
+        (limit,)
+    ).fetchall()
+    conn.close()
+    keys = ["timestamp","product_key","product_name","competitor",
+            "action","old_price","new_price","product_id","notes"]
+    return [dict(zip(keys, r)) for r in rows]
+
+
+def undo_processed(product_key: str) -> bool:
+    """تراجع: إزالة المنتج من قائمة المعالجة"""
+    conn = get_db()
+    conn.execute("DELETE FROM processed_products WHERE product_key=?", (product_key,))
+    conn.execute("DELETE FROM hidden_products WHERE product_key=?", (product_key,))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def get_processed_keys() -> set:
+    """مفاتيح المنتجات المعالجة لاستبعادها من القوائم"""
+    conn = get_db()
+    rows = conn.execute("SELECT product_key FROM processed_products").fetchall()
+    conn.close()
+    return {r[0] for r in rows}
+
