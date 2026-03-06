@@ -91,8 +91,8 @@ def _parse_gemini_keys():
 # ══════════════════════════════════════════════
 GEMINI_API_KEYS    = _parse_gemini_keys()
 GEMINI_API_KEY     = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
-OPENROUTER_API_KEY = _s("OPENROUTER_API_KEY") or _s("OPENROUTER_KEY")
-COHERE_API_KEY     = _s("COHERE_API_KEY")
+OPENROUTER_API_KEY = _s("OPENROUTER_API_KEY") or _s("OPENROUTER_KEY") or ""
+COHERE_API_KEY     = _s("COHERE_API_KEY") or ""
 EXTRA_API_KEY      = _s("EXTRA_API_KEY")
 
 # ══════════════════════════════════════════════
