@@ -12,7 +12,7 @@ engines/ai_engine.py v24.0 — خبير مهووس الكامل
 import requests, json, re, time, traceback
 from config import GEMINI_API_KEYS, OPENROUTER_API_KEY, COHERE_API_KEY
 
-_GM  = "gemini-1.5-flash-latest"  # ← النموذج المستقر الموصى به
+_GM  = "gemini-2.0-flash"  # ← النموذج المستقر الموصى به
 _GU  = f"https://generativelanguage.googleapis.com/v1beta/models/{_GM}:generateContent"
 _OR  = "https://openrouter.ai/api/v1/chat/completions"
 _CO  = "https://api.cohere.ai/v1/generate"
@@ -76,7 +76,7 @@ def diagnose_ai_providers() -> dict:
     if OPENROUTER_API_KEY:
         try:
             r = requests.post(_OR, json={
-                "model": "google/gemini-1.5-flash-latest",  # ← مستقر
+                "model": "google/gemini-2.0-flash",  # ← مستقر
                 "messages": [{"role":"user","content":"test"}],
                 "max_tokens": 5
             }, headers={

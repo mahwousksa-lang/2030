@@ -10,7 +10,7 @@ APP_TITLE   = "نظام التسعير الذكي - مهووس"
 APP_NAME    = APP_TITLE
 APP_VERSION = "v19.0"
 APP_ICON    = "🧪"
-GEMINI_MODEL = "gemini-1.5-flash-latest"   # النموذج المستقر الموصى به
+GEMINI_MODEL = "gemini-2.0-flash"   # النموذج المستقر الموصى به
 
 # ══════════════════════════════════════════════
 #  قراءة Secrets بطريقة آمنة 100%

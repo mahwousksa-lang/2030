@@ -1268,39 +1268,39 @@ elif page == "🔍 منتجات مفقودة":
                     _has_desc = f"desc_{idx}" in st.session_state
                     _make_lbl = "📤 إرسال Make + وصف" if _has_desc else "📤 إرسال Make"
                     if st.button(_make_lbl, key=f"mk_m_{idx}", type="primary" if _has_desc else "secondary"):
-                        if not _has_desc:
-                            st.warning("💡 اضغط 'خبير الوصف' أولاً")
+                        _desc_send  = st.session_state.get(f"desc_{idx}","")
+                        _fi_send    = st.session_state.get(f"frag_info_{idx}",{})
+                        _img_url    = _fi_send.get("image_url","") if _fi_send else ""
+                        _size_val   = extract_size(name)
+                        _size_str   = f"{int(_size_val)}ml" if _size_val else size
+                        # إرسال مباشر سواء كان هناك وصف أم لا
+                        with st.spinner("📤 يُرسل لـ Make..."):
+                            res = send_new_products([{
+                                "أسم المنتج":  name,
+                                "سعر المنتج":  suggested_price,
+                                "brand":       brand,
+                                "الوصف":       _desc_send,
+                                "image_url":   _img_url,
+                                "الحجم":       _size_str,
+                                "النوع":       ptype,
+                                "المنافس":     comp,
+                                "سعر_المنافس": price,
+                            }])
+                        if res["success"]:
+                            _wc = len(_desc_send.split()) if _desc_send else 0
+                            _wc_msg = f" — وصف {_wc} كلمة" if _wc > 0 else ""
+                            st.success(f"✅ {res['message']}{_wc_msg}")
+                            _mk = f"missing_{name}_{idx}"
+                            st.session_state.hidden_products.add(_mk)
+                            save_hidden_product(_mk, name, "sent_to_make")
+                            save_processed(_mk, name, comp, "send_missing",
+                                           new_price=suggested_price,
+                                           notes=f"إضافة جديدة" + (f" + وصف {_wc} كلمة" if _wc > 0 else ""))
+                            for k in [f"desc_{idx}",f"frag_info_{idx}"]:
+                                if k in st.session_state: del st.session_state[k]
+                            st.rerun()
                         else:
-                            _desc_send  = st.session_state.get(f"desc_{idx}","")
-                            _fi_send    = st.session_state.get(f"frag_info_{idx}",{})
-                            _img_url    = _fi_send.get("image_url","") if _fi_send else ""
-                            _size_val   = extract_size(name)
-                            _size_str   = f"{int(_size_val)}ml" if _size_val else size
-                            with st.spinner("📤 يُرسل لـ Make..."):
-                                res = send_new_products([{
-                                    "أسم المنتج":  name,
-                                    "سعر المنتج":  suggested_price,
-                                    "brand":       brand,
-                                    "الوصف":       _desc_send,
-                                    "image_url":   _img_url,
-                                    "الحجم":       _size_str,
-                                    "النوع":       ptype,
-                                    "المنافس":     comp,
-                                    "سعر_المنافس": price,
-                                }])
-                            if res["success"]:
-                                st.success(f"✅ {res['message']} — وصف {len(_desc_send.split())} كلمة")
-                                _mk = f"missing_{name}_{idx}"
-                                st.session_state.hidden_products.add(_mk)
-                                save_hidden_product(_mk, name, "sent_to_make")
-                                save_processed(_mk, name, comp, "send_missing",
-                                               new_price=suggested_price,
-                                               notes=f"إضافة جديدة + وصف {len(_desc_send.split())} كلمة")
-                                for k in [f"desc_{idx}",f"frag_info_{idx}"]:
-                                    if k in st.session_state: del st.session_state[k]
-                                st.rerun()
-                            else:
-                                st.error(res["message"])
+                            st.error(res["message"])
 
                 with b7:
                     if st.button("🤖 تكرار؟", key=f"dup_{idx}"):
@@ -1556,14 +1556,14 @@ elif page == "✔️ تمت المعالجة":
                     price_info = f" | {p_price_old:.0f} → {p_price_new:.0f} ر.س"
                 elif p_price_new > 0:
                     price_info = f" | {p_price_new:.0f} ر.س"
+                _notes_html = ("<br><span style='color:#aaa;font-size:.73rem'>" + p_notes[:80] + "</span>") if p_notes else ""
                 st.markdown(
                     f'<div style="padding:6px 10px;border-radius:6px;background:#0a1628;'
                     f'border:1px solid #1a2a44;font-size:.85rem">'
                     f'<span style="color:#888;font-size:.75rem">{p_ts[:16]}</span> &nbsp;'
                     f'{icon} <b style="color:#4fc3f7">{p_name[:60]}</b>'
                     f'<span style="color:#888"> — {p_act}{price_info}</span>'
-                    f'{"<br><span style=\'color:#aaa;font-size:.73rem\'>" + p_notes[:80] + "</span>" if p_notes else ""}'
-                    f'</div>',
+                    f'{_notes_html}</div>',
                     unsafe_allow_html=True
                 )
             with col_b:
