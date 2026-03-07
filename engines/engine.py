@@ -1272,6 +1272,21 @@ def find_missing_products(our_df, comp_dfs):
 
             seen_bare.add(bare_ck)
 
+            # ── حساب درجة الثقة ──────────────────────────────
+            # score = أعلى نسبة تشابه مع منتجاتنا (كلما انخفضت = مفقود مؤكد أكثر)
+            _has_similar = bool(reason and "⚠️" in reason)
+            _has_var     = bool(variant)
+            if score < 40 and not _has_var and not _has_similar:
+                _conf_level = "green"    # مفقود مؤكد — جاهز للإرسال
+            elif score < 55 and not _has_similar:
+                _conf_level = "green"    # مفقود مؤكد
+            elif _has_similar or (score >= 55 and score < 68):
+                _conf_level = "yellow"   # مفقود محتمل — يحتاج تحقق
+            elif _has_var and variant.get("type") == "similar":
+                _conf_level = "red"      # مشكوك فيه — محظور الإرسال
+            else:
+                _conf_level = "green"
+
             entry = {
                 "منتج_المنافس":  cp,
                 "معرف_المنافس":  _pid(row, icol),
@@ -1284,6 +1299,8 @@ def find_missing_products(our_df, comp_dfs):
                 "هو_تستر":       c_is_t,
                 "تاريخ_الرصد":   datetime.now().strftime("%Y-%m-%d"),
                 "ملاحظة":        reason if reason and "⚠️" in reason else "",
+                "درجة_التشابه":  round(score, 1),
+                "مستوى_الثقة":  _conf_level,
             }
 
             # إضافة معلومات النوع المتاح (تستر/أساسي)

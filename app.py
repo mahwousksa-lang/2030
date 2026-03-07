@@ -1088,6 +1088,8 @@ elif page == "🔍 منتجات مفقودة":
                 variant_product = str(row.get("منتج_متاح", ""))
                 variant_score   = safe_float(row.get("نسبة_التشابه", 0))
                 is_tester_flag  = bool(row.get("هو_تستر", False))
+                conf_level      = str(row.get("مستوى_الثقة", "green"))
+                conf_score      = safe_float(row.get("درجة_التشابه", 0))
                 suggested_price = round(price - 1, 2) if price > 0 else 0
 
                 _is_similar = "⚠️" in note
@@ -1127,7 +1129,8 @@ elif page == "🔍 منتجات مفقودة":
                     ptype=ptype, comp=comp, suggested_price=suggested_price,
                     note=note if _is_similar else "",
                     variant_html=_variant_html, tester_badge=_tester_badge,
-                    border_color=_border
+                    border_color=_border,
+                    confidence_level=conf_level, confidence_score=conf_score
                 ), unsafe_allow_html=True)
 
                 # ── الأزرار — صف 1 ────────────────────────────────────
