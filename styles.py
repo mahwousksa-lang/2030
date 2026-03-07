@@ -128,25 +128,39 @@ def vs_card(our_name, our_price, comp_name, comp_price, diff, comp_source="", pr
 
 
 def comp_strip(all_comps):
-    """شريط المنافسين المصغر — يعرض كل المنافسين بأسعارهم مرتبين من الأقل"""
+    """شريط المنافسين المصغر — يعرض كل المنافسين بأسعارهم واسم المنتج لديهم مرتبين من الأقل"""
     if not all_comps or not isinstance(all_comps, list) or len(all_comps) == 0:
         return ""
     # ترتيب من الأقل سعراً
     sorted_comps = sorted(all_comps, key=lambda c: float(c.get("price", 0) or 0))
-    chips = []
+    rows = []
     for i, cm in enumerate(sorted_comps):
-        c_name = str(cm.get("competitor", ""))[:15]
+        c_store = str(cm.get("competitor", "")).strip()
         c_price = float(cm.get("price", 0) or 0)
-        c_pname = str(cm.get("name", ""))[:30]
-        cls = "leader" if i == 0 else "normal"
-        crown = "👑 " if i == 0 else ""
-        chips.append(
-            f'<span class="comp-chip {cls}" title="{c_pname}">'
-            f'{crown}<span class="cp-name">{c_name}</span> '
-            f'<span class="cp-price">{c_price:,.0f}</span>'
-            f'</span>'
+        c_pname = str(cm.get("name", "")).strip()
+        c_score = float(cm.get("score", 0) or 0)
+        is_leader = (i == 0)
+        crown = "👑" if is_leader else ""
+        bg = "rgba(255,152,0,.10)" if is_leader else "rgba(108,99,255,.05)"
+        border = "#ff9800" if is_leader else "#333366"
+        name_color = "#ffb74d" if is_leader else "#9e9eff"
+        # اسم المنتج لدى المنافس (مختصر)
+        short_pname = c_pname[:50] + ".." if len(c_pname) > 50 else c_pname
+        score_html = f'<span style="color:#888;font-size:.62rem">{c_score:.0f}%</span>' if c_score > 0 else ""
+        rows.append(
+            f'<div style="display:flex;justify-content:space-between;align-items:center;'
+            f'padding:5px 10px;background:{bg};border:1px solid {border};border-radius:8px;'
+            f'margin:2px 0;gap:8px;flex-wrap:wrap">'
+            f'<div style="display:flex;align-items:center;gap:6px;flex:1;min-width:0">'
+            f'<span style="font-weight:900;font-size:.8rem">{crown}</span>'
+            f'<span style="font-weight:700;color:{name_color};font-size:.75rem;white-space:nowrap">{c_store}</span>'
+            f'<span style="color:#aaa;font-size:.7rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:300px" title="{c_pname}">{short_pname}</span>'
+            f'{score_html}'
+            f'</div>'
+            f'<span style="font-weight:900;color:{"#ff9800" if is_leader else "#9e9eff"};font-size:.85rem;white-space:nowrap">{c_price:,.0f} ر.س</span>'
+            f'</div>'
         )
-    return f'<div class="comp-strip">{"".join(chips)}</div>'
+    return f'<div class="comp-strip" style="flex-direction:column;gap:2px">{chr(10).join(rows)}</div>'
 
 
 def miss_card(name, price, brand, size, ptype, comp, suggested_price,
