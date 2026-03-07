@@ -81,6 +81,25 @@ for k, v in _defaults.items():
 _db_hidden = get_hidden_product_keys()
 st.session_state.hidden_products = st.session_state.hidden_products | _db_hidden
 
+# ════════════════════════════════════════════════
+#  المعالجة الخلفية
+# ════════════════════════════════════════════════
+def _split_results(df):
+    """تقسيم نتائج التحليل على الأقسام بأمان تام"""
+    def _contains(col, txt):
+        try:
+            return df[col].str.contains(txt, na=False, regex=False)
+        except Exception:
+            return pd.Series([False] * len(df))
+    return {
+        "price_raise": df[_contains("القرار", "أعلى")].reset_index(drop=True),
+        "price_lower": df[_contains("القرار", "أقل")].reset_index(drop=True),
+        "approved":    df[_contains("القرار", "موافق")].reset_index(drop=True),
+        "review":      df[_contains("القرار", "مراجعة")].reset_index(drop=True),
+        "all":         df,
+    }
+
+
 # ── تحميل تلقائي للنتائج المحفوظة عند فتح التطبيق ──
 if st.session_state.results is None and not st.session_state.job_running:
     _auto_job = get_last_job()
@@ -114,25 +133,6 @@ def decision_badge(action):
     }
     c, label = colors.get(action, ("#666", action))
     return f'<span style="font-size:.7rem;color:{c};font-weight:700">{label}</span>'
-
-
-# ════════════════════════════════════════════════
-#  المعالجة الخلفية
-# ════════════════════════════════════════════════
-def _split_results(df):
-    """تقسيم نتائج التحليل على الأقسام بأمان تام"""
-    def _contains(col, txt):
-        try:
-            return df[col].str.contains(txt, na=False, regex=False)
-        except Exception:
-            return pd.Series([False] * len(df))
-    return {
-        "price_raise": df[_contains("القرار", "أعلى")].reset_index(drop=True),
-        "price_lower": df[_contains("القرار", "أقل")].reset_index(drop=True),
-        "approved":    df[_contains("القرار", "موافق")].reset_index(drop=True),
-        "review":      df[_contains("القرار", "مراجعة")].reset_index(drop=True),
-        "all":         df,
-    }
 
 
 def _run_analysis_background(job_id, our_df, comp_dfs, our_file_name, comp_names):
