@@ -77,87 +77,26 @@ details summary span[data-testid] svg {
     direction: rtl;
     font-family: 'Tajawal', sans-serif !important;
 }
-/* ── زر إخفاء/إظهار القائمة الجانبية ── */
-#sidebar-toggle-btn {
-    position: fixed;
-    top: 50%;
-    left: 0;
-    transform: translateY(-50%);
-    z-index: 99999;
-    background: linear-gradient(180deg,#6C63FF,#4a42cc);
-    color: #fff;
-    border: none;
-    border-radius: 0 10px 10px 0;
-    width: 20px;
-    height: 64px;
-    cursor: pointer;
-    font-size: 11px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    box-shadow: 3px 0 10px rgba(108,99,255,.5);
-    transition: all .25s ease;
-    padding: 0;
-    line-height: 1;
-}
-#sidebar-toggle-btn:hover {
-    width: 26px;
-    background: linear-gradient(180deg,#7c74ff,#5a52dc);
-    box-shadow: 4px 0 14px rgba(108,99,255,.7);
-}
-#sidebar-toggle-btn .arrow {
-    font-size: 14px;
-    font-style: normal;
-    transition: transform .25s ease;
-}
+/* ── زر القائمة الجانبية ── منقول إلى get_sidebar_toggle_js */
 </style>"""
 
 
 def get_sidebar_toggle_js():
-    """JavaScript لزر إخفاء/إظهار القائمة الجانبية"""
-    return """
-<button id="sidebar-toggle-btn" onclick="toggleSidebar()" title="إخفاء/إظهار القائمة">
-  <span class="arrow" id="toggle-arrow">◀</span>
-</button>
-<script>
-(function() {
-    var _hidden = false;
-
-    function toggleSidebar() {
-        var sidebar = window.parent.document.querySelector('[data-testid="stSidebar"]');
-        var btn     = window.parent.document.getElementById('sidebar-toggle-btn');
-        var arrow   = window.parent.document.getElementById('toggle-arrow');
-        if (!sidebar) return;
-
-        _hidden = !_hidden;
-        if (_hidden) {
-            sidebar.style.display = 'none';
-            btn.style.left = '0px';
-            if (arrow) arrow.textContent = '▶';
-        } else {
-            sidebar.style.display = '';
-            if (arrow) arrow.textContent = '◀';
-        }
-    }
-
-    // تأكد أن الزر موجود في الـ parent document
-    window.parent.toggleSidebar = toggleSidebar;
-
-    // نقل الزر إلى parent document إذا كان في iframe
-    window.addEventListener('load', function() {
-        var existingBtn = window.parent.document.getElementById('sidebar-toggle-btn');
-        if (!existingBtn) {
-            var btn = document.getElementById('sidebar-toggle-btn');
-            if (btn) {
-                window.parent.document.body.appendChild(btn.cloneNode(true));
-                // إعادة ربط الحدث
-                var newBtn = window.parent.document.getElementById('sidebar-toggle-btn');
-                if (newBtn) newBtn.onclick = function() { window.parent.toggleSidebar(); };
-            }
-        }
-    });
-})();
-</script>
+    """CSS فقط لزر إخفاء/إظهار القائمة الجانبية — متوافق مع Streamlit Cloud"""
+    return """<style>
+/* زر إخفاء/إظهار القائمة الجانبية — يستخدم الزر المدمج في Streamlit */
+[data-testid="collapsedControl"] {
+    color: #6C63FF !important;
+    background: linear-gradient(180deg,#6C63FF22,#4a42cc22) !important;
+    border: 1px solid #6C63FF44 !important;
+    border-radius: 0 8px 8px 0 !important;
+    transition: all .25s ease !important;
+}
+[data-testid="collapsedControl"]:hover {
+    background: linear-gradient(180deg,#6C63FF44,#4a42cc44) !important;
+    box-shadow: 3px 0 10px rgba(108,99,255,.4) !important;
+}
+</style>
 """
 
 
