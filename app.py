@@ -81,6 +81,19 @@ for k, v in _defaults.items():
 _db_hidden = get_hidden_product_keys()
 st.session_state.hidden_products = st.session_state.hidden_products | _db_hidden
 
+# ── تحميل تلقائي للنتائج المحفوظة عند فتح التطبيق ──
+if st.session_state.results is None and not st.session_state.job_running:
+    _auto_job = get_last_job()
+    if _auto_job and _auto_job["status"] == "done" and _auto_job.get("results"):
+        _auto_df = pd.DataFrame(_auto_job["results"])
+        if not _auto_df.empty:
+            _auto_miss = pd.DataFrame(_auto_job.get("missing", [])) if _auto_job.get("missing") else pd.DataFrame()
+            _auto_r = _split_results(_auto_df)
+            _auto_r["missing"] = _auto_miss
+            st.session_state.results     = _auto_r
+            st.session_state.analysis_df = _auto_df
+            st.session_state.job_id      = _auto_job.get("job_id")
+
 
 # ── دوال مساعدة ───────────────────────────
 def db_log(page, action, details=""):
