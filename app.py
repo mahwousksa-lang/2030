@@ -82,7 +82,7 @@ _db_hidden = get_hidden_product_keys()
 st.session_state.hidden_products = st.session_state.hidden_products | _db_hidden
 
 # ════════════════════════════════════════════════
-#  المعالجة الخلفية
+#  دوال المعالجة — يجب تعريفها قبل استخدامها
 # ════════════════════════════════════════════════
 def _split_results(df):
     """تقسيم نتائج التحليل على الأقسام بأمان تام"""
@@ -98,42 +98,6 @@ def _split_results(df):
         "review":      df[_contains("القرار", "مراجعة")].reset_index(drop=True),
         "all":         df,
     }
-
-
-# ── تحميل تلقائي للنتائج المحفوظة عند فتح التطبيق ──
-if st.session_state.results is None and not st.session_state.job_running:
-    _auto_job = get_last_job()
-    if _auto_job and _auto_job["status"] == "done" and _auto_job.get("results"):
-        _auto_records = _restore_results_from_json(_auto_job["results"])
-        _auto_df = pd.DataFrame(_auto_records)
-        if not _auto_df.empty:
-            _auto_miss = pd.DataFrame(_auto_job.get("missing", [])) if _auto_job.get("missing") else pd.DataFrame()
-            _auto_r = _split_results(_auto_df)
-            _auto_r["missing"] = _auto_miss
-            st.session_state.results     = _auto_r
-            st.session_state.analysis_df = _auto_df
-            st.session_state.job_id      = _auto_job.get("job_id")
-
-
-# ── دوال مساعدة ───────────────────────────
-def db_log(page, action, details=""):
-    try: log_event(page, action, details)
-    except: pass
-
-def ts_badge(ts_str=""):
-    """شارة تاريخ مصغرة جميلة"""
-    if not ts_str:
-        ts_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-    return f'<span style="font-size:.65rem;color:#555;background:#1a1a2e;padding:1px 6px;border-radius:8px;margin-right:4px">🕐 {ts_str}</span>'
-
-def decision_badge(action):
-    colors = {
-        "approved": ("#00C853", "✅ موافق"),
-        "deferred": ("#FFD600", "⏸️ مؤجل"),
-        "removed":  ("#FF1744", "🗑️ محذوف"),
-    }
-    c, label = colors.get(action, ("#666", action))
-    return f'<span style="font-size:.7rem;color:{c};font-weight:700">{label}</span>'
 
 
 def _safe_results_for_json(results_list):
@@ -174,6 +138,42 @@ def _restore_results_from_json(results_list):
                 row[k] = []
         restored.append(row)
     return restored
+
+
+# ── تحميل تلقائي للنتائج المحفوظة عند فتح التطبيق ──
+if st.session_state.results is None and not st.session_state.job_running:
+    _auto_job = get_last_job()
+    if _auto_job and _auto_job["status"] == "done" and _auto_job.get("results"):
+        _auto_records = _restore_results_from_json(_auto_job["results"])
+        _auto_df = pd.DataFrame(_auto_records)
+        if not _auto_df.empty:
+            _auto_miss = pd.DataFrame(_auto_job.get("missing", [])) if _auto_job.get("missing") else pd.DataFrame()
+            _auto_r = _split_results(_auto_df)
+            _auto_r["missing"] = _auto_miss
+            st.session_state.results     = _auto_r
+            st.session_state.analysis_df = _auto_df
+            st.session_state.job_id      = _auto_job.get("job_id")
+
+
+# ── دوال مساعدة ───────────────────────────
+def db_log(page, action, details=""):
+    try: log_event(page, action, details)
+    except: pass
+
+def ts_badge(ts_str=""):
+    """شارة تاريخ مصغرة جميلة"""
+    if not ts_str:
+        ts_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    return f'<span style="font-size:.65rem;color:#555;background:#1a1a2e;padding:1px 6px;border-radius:8px;margin-right:4px">🕐 {ts_str}</span>'
+
+def decision_badge(action):
+    colors = {
+        "approved": ("#00C853", "✅ موافق"),
+        "deferred": ("#FFD600", "⏸️ مؤجل"),
+        "removed":  ("#FF1744", "🗑️ محذوف"),
+    }
+    c, label = colors.get(action, ("#666", action))
+    return f'<span style="font-size:.7rem;color:{c};font-weight:700">{label}</span>'
 
 
 def _run_analysis_background(job_id, our_df, comp_dfs, our_file_name, comp_names):
