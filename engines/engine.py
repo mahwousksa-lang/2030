@@ -254,11 +254,35 @@ def read_file(f):
         # تنظيف أسماء الأعمدة من BOM والمسافات
         df.columns = df.columns.str.strip().str.replace('\ufeff', '', regex=False)
         df = df.dropna(how='all').reset_index(drop=True)
+        # ── كشف ملفات ذات صفين عناوين (مثل ملف سلة) ──
+        df = _detect_double_header(df)
         # إذا كانت الأعمدة Unnamed أو أسماء CSS → تخمين ذكي
         df = _smart_rename_columns(df)
         return df, None
     except Exception as e:
         return None, str(e)
+
+
+def _detect_double_header(df):
+    """كشف ملفات ذات صفين عناوين (مثل ملف سلة الذي يحتوي على صف مجموعة + صف عناوين)"""
+    cols = list(df.columns)
+    unnamed_count = sum(1 for c in cols if str(c).startswith('Unnamed'))
+    # إذا أغلب الأعمدة Unnamed → الصف الأول من البيانات قد يكون العناوين الحقيقية
+    if unnamed_count >= len(cols) // 2 and len(df) > 2:
+        # تحقق: هل الصف الأول يحتوي على أسماء أعمدة معروفة؟
+        first_row = df.iloc[0].astype(str).tolist()
+        _known_headers = [
+            'اسم المنتج', 'أسم المنتج', 'سعر المنتج', 'السعر', 'النوع',
+            'no.', 'sku', 'رمز المنتج', 'سعر التكلفة', 'السعر المخفض',
+            'product', 'name', 'price', 'رقم المنتج', 'رمز المنتج sku'
+        ]
+        match_count = sum(1 for v in first_row if str(v).strip().lower() in _known_headers)
+        if match_count >= 2:
+            # الصف الأول هو العناوين الحقيقية → استخدمه كعناوين
+            new_cols = [str(v).strip() for v in first_row]
+            df.columns = new_cols
+            df = df.iloc[1:].reset_index(drop=True)
+    return df
 
 
 def _smart_rename_columns(df):
@@ -535,9 +559,24 @@ def _pid(row, col):
     return str(v).strip()
 
 def _fcol(df, cands):
+    """بحث مرن عن العمود — يدعم الهمزات والبحث الجزئي"""
+    cols = list(df.columns)
+    # بحث 1: تطابق تام
     for c in cands:
-        if c in df.columns: return c
-    return df.columns[0] if len(df.columns) else ""
+        if c in cols: return c
+    # بحث 2: تطبيع الهمزات (أ/إ/آ → ا)
+    def _norm_ar(s):
+        return str(s).replace('أ','ا').replace('إ','ا').replace('آ','ا').strip()
+    norm_cols = {_norm_ar(c): c for c in cols}
+    for c in cands:
+        nc = _norm_ar(c)
+        if nc in norm_cols: return norm_cols[nc]
+    # بحث 3: بحث جزئي (العمود يحتوي على الكلمة المفتاحية)
+    for c in cands:
+        for col in cols:
+            if c in col or _norm_ar(c) in _norm_ar(col):
+                return col
+    return cols[0] if cols else ""
 
 # ═══════════════════════════════════════════════════════
 #  الكلاس الجديد: Pre-normalized Competitor Index
@@ -944,7 +983,7 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True):
     """
     results = []
     our_col       = _fcol(our_df, ["المنتج","اسم المنتج","Product","Name","name"])
-    our_price_col = _fcol(our_df, ["السعر","سعر","Price","price","PRICE"])
+    our_price_col = _fcol(our_df, ["سعر المنتج","السعر","سعر","Price","price","PRICE"])
     our_id_col    = _fcol(our_df, [
         "رقم المنتج","معرف المنتج","المعرف","معرف","رقم_المنتج","معرف_المنتج",
         "product_id","Product ID","Product_ID","ID","id","Id",
