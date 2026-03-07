@@ -685,6 +685,18 @@ with st.sidebar:
         ]:
             cnt = len(r.get(key, pd.DataFrame()))
             st.caption(f"{icon} {label}: **{cnt}**")
+        # ملخص الثقة للمفقودات
+        _miss_df = r.get("missing", pd.DataFrame())
+        if not _miss_df.empty and "مستوى_الثقة" in _miss_df.columns:
+            _gc = len(_miss_df[_miss_df["مستوى_الثقة"] == "green"])
+            _yc = len(_miss_df[_miss_df["مستوى_الثقة"] == "yellow"])
+            _rc = len(_miss_df[_miss_df["مستوى_الثقة"] == "red"])
+            st.markdown(
+                f'<div style="background:#1a1a2e;border-radius:6px;padding:6px;margin-top:4px;font-size:.75rem">'
+                f'🟢 مؤكد: <b>{_gc}</b> &nbsp; '
+                f'🟡 محتمل: <b>{_yc}</b> &nbsp; '
+                f'🔴 مشكوك: <b>{_rc}</b></div>',
+                unsafe_allow_html=True)
 
     # قرارات معلقة
     pending_cnt = len(st.session_state.decisions_pending)
@@ -727,6 +739,20 @@ if page == "📊 لوحة التحكم":
         ]
         for col, (icon, label, val, color) in zip(cols, data):
             col.markdown(stat_card(icon, label, val, color), unsafe_allow_html=True)
+
+        # ملخص الثقة للمفقودات في لوحة التحكم
+        _miss_dash = r.get("missing", pd.DataFrame())
+        if not _miss_dash.empty and "مستوى_الثقة" in _miss_dash.columns:
+            _g = len(_miss_dash[_miss_dash["مستوى_الثقة"] == "green"])
+            _y = len(_miss_dash[_miss_dash["مستوى_الثقة"] == "yellow"])
+            _rd = len(_miss_dash[_miss_dash["مستوى_الثقة"] == "red"])
+            st.markdown(
+                f'<div style="display:flex;gap:12px;justify-content:center;padding:8px;'
+                f'background:#1a1a2e;border-radius:8px;margin:8px 0">'
+                f'<span style="color:#00C853">🟢 مؤكد: <b>{_g}</b></span>'
+                f'<span style="color:#FFD600">🟡 محتمل: <b>{_y}</b></span>'
+                f'<span style="color:#FF1744">🔴 مشكوك: <b>{_rd}</b></span>'
+                f'</div>', unsafe_allow_html=True)
 
         st.markdown("---")
         cc1, cc2 = st.columns(2)
@@ -1043,6 +1069,13 @@ elif page == "🔍 منتجات مفقودة":
                 _cv = _conf_map.get(conf_f, "")
                 if _cv:
                     filtered = filtered[filtered["مستوى_الثقة"] == _cv]
+
+            # ── ترتيب حسب الثقة (الأكثر ثقة أولاً) ─────────────────────
+            if "مستوى_الثقة" in filtered.columns:
+                _conf_order = {"green": 0, "yellow": 1, "red": 2}
+                filtered = filtered.assign(
+                    _conf_sort=filtered["مستوى_الثقة"].map(_conf_order).fillna(3)
+                ).sort_values("_conf_sort").drop(columns=["_conf_sort"])
 
             # ── تصدير ─────────────────────────────────────────────────────
             cc1,cc2,cc3 = st.columns(3)
