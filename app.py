@@ -28,7 +28,7 @@ except ImportError:
         def add_script_run_ctx(t): return t  # fallback آمن
 
 from config import *
-from styles import get_styles, stat_card, vs_card, get_sidebar_toggle_js
+from styles import get_styles, stat_card, vs_card, comp_strip, miss_card, get_sidebar_toggle_js
 from engines.engine import (read_file, run_full_analysis, find_missing_products,
                              extract_brand, extract_size, extract_type, is_sample)
 from engines.ai_engine import (call_ai, gemini_chat, chat_with_ai,
@@ -382,17 +382,10 @@ def render_pro_table(df, prefix, section_type="update", show_search=True):
           {ts_badge(ts_now)}
         </div>""", unsafe_allow_html=True)
 
-        # منافسين متعددين
+        # شريط المنافسين المصغر — يعرض كل المنافسين بأسعارهم
         all_comps = row.get("جميع_المنافسين", row.get("جميع المنافسين", []))
-        if isinstance(all_comps, list) and len(all_comps) > 1:
-            with st.expander(f"👥 {len(all_comps)} منافس", expanded=False):
-                for cm in all_comps:
-                    st.markdown(
-                        f'<div class="multi-comp">🏪 <b>{cm.get("competitor","")}</b>: '
-                        f'{cm.get("name","")} — '
-                        f'<span style="color:#ff9800">{cm.get("price",0):,.0f} ر.س</span> '
-                        f'({cm.get("score",0):.0f}%)</div>',
-                        unsafe_allow_html=True)
+        if isinstance(all_comps, list) and len(all_comps) > 0:
+            st.markdown(comp_strip(all_comps), unsafe_allow_html=True)
 
         # ── أزرار لكل منتج ─────────────────────
         b1, b2, b3, b4, b5, b6, b7, b8, b9 = st.columns([1, 1, 1, 1, 1, 1, 1, 1, 1])
@@ -1129,29 +1122,13 @@ elif page == "🔍 منتجات مفقودة":
                 if is_tester_flag:
                     _tester_badge = '<span style="font-size:.68rem;padding:2px 7px;border-radius:10px;background:#9c27b022;color:#ce93d8;margin-right:6px">🏷️ تستر</span>'
 
-                _note_html = f'<div style="font-size:.72rem;color:#ff9800;margin-top:4px">{note}</div>' if _is_similar else ""
-
-                st.markdown(f"""
-                <div style="border:1px solid {_border};border-radius:10px;padding:14px;
-                            margin:6px 0;background:linear-gradient(135deg,#0a1628,#0e1a30);">
-                  <div style="display:flex;justify-content:space-between;align-items:flex-start">
-                    <div style="flex:1">
-                      <div style="font-weight:700;color:#4fc3f7;font-size:1rem">
-                        {_tester_badge}{name}
-                      </div>
-                      <div style="font-size:.75rem;color:#888;margin-top:4px">
-                        🏷️ {brand or "—"} &nbsp;|&nbsp; 📏 {size or "—"} &nbsp;|&nbsp;
-                        🧴 {ptype or "—"} &nbsp;|&nbsp; 🏪 {comp}
-                      </div>
-                      {_variant_html}
-                      {_note_html}
-                    </div>
-                    <div style="text-align:right;min-width:120px">
-                      <div style="font-size:1.2rem;font-weight:900;color:#ff9800">{price:,.0f} ر.س</div>
-                      <div style="font-size:.72rem;color:#4caf50">مقترح: {suggested_price:,.0f} ر.س</div>
-                    </div>
-                  </div>
-                </div>""", unsafe_allow_html=True)
+                st.markdown(miss_card(
+                    name=name, price=price, brand=brand, size=size,
+                    ptype=ptype, comp=comp, suggested_price=suggested_price,
+                    note=note if _is_similar else "",
+                    variant_html=_variant_html, tester_badge=_tester_badge,
+                    border_color=_border
+                ), unsafe_allow_html=True)
 
                 # ── الأزرار — صف 1 ────────────────────────────────────
                 b1,b2,b3,b4 = st.columns(4)
