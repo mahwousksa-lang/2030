@@ -858,7 +858,18 @@ def _ai_batch(batch):
                     _cset(ck, out)
                     return out
             elif r.status_code == 429:
-                time.sleep(1.5)
+                # rate limit → انتظر أطول ثم جرب نفس المفتاح مرة أخرى
+                time.sleep(3)
+                try:
+                    r2 = _req.post(f"{_GURL}?key={key}", json=g_payload, timeout=25)
+                    if r2.status_code == 200:
+                        txt = r2.json()["candidates"][0]["content"]["parts"][0]["text"]
+                        out = _parse(txt)
+                        if out:
+                            _cset(ck, out)
+                            return out
+                except Exception:
+                    pass
             # 403/400 → جرب المفتاح التالي فوراً
         except Exception:
             continue
@@ -1005,7 +1016,7 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True):
 
     total   = len(our_df)
     pending = []
-    BATCH   = 12
+    BATCH   = 8  # خفض من 12 إلى 8 لتقليل ضغط Gemini ومنع rate limit
 
     def _flush():
         """يُعالج الـ pending batch ويضيف النتائج مباشرة — محمي من الأخطاء"""
@@ -1043,6 +1054,11 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True):
                 # خطأ في منتج واحد → تخطيه وأكمل
                 continue
         pending.clear()
+        # تأخير صغير بين الباتشات لمنع rate limit
+        try:
+            time.sleep(0.5)
+        except Exception:
+            pass
 
     for i, (_, row) in enumerate(our_df.iterrows()):
         product = str(row.get(our_col, "")).strip()

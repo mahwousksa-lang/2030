@@ -185,8 +185,8 @@ def _run_analysis_background(job_id, our_df, comp_dfs, our_file_name, comp_names
     def progress_cb(pct, current_results):
         nonlocal processed
         processed = int(pct * total)
-        # حفظ كل 10 منتجات أو عند الاكتمال
-        if processed - _last_save[0] >= 10 or processed >= total:
+        # حفظ كل 25 منتجاً أو عند الاكتمال (تقليل ضغط SQLite)
+        if processed - _last_save[0] >= 25 or processed >= total:
             _last_save[0] = processed
             try:
                 safe_res = _safe_results_for_json(current_results)
@@ -196,8 +196,10 @@ def _run_analysis_background(job_id, our_df, comp_dfs, our_file_name, comp_names
                     "running",
                     our_file_name, comp_names
                 )
-            except Exception:
-                pass  # لا نوقف المعالجة بسبب خطأ حفظ
+            except Exception as _save_err:
+                # لا نوقف المعالجة بسبب خطأ حفظ جزئي
+                import traceback
+                traceback.print_exc()
 
     analysis_df = pd.DataFrame()
     missing_df  = pd.DataFrame()
@@ -752,9 +754,14 @@ with st.sidebar:
                 pct = job["processed"] / max(job["total"], 1)
                 st.progress(min(pct, 0.99),
                             f"⚙️ {job['processed']}/{job['total']} منتج")
-                # أعد تحميل الصفحة كل 3 ثوانٍ لتحديث الشريط
-                time.sleep(3)
-                st.rerun()
+                # تحديث تلقائي كل 4 ثوانٍ بدون إعادة تشغيل الكود كاملاً
+                try:
+                    from streamlit_autorefresh import st_autorefresh
+                    st_autorefresh(interval=4000, key="progress_refresh")
+                except ImportError:
+                    # fallback: rerun عادي إذا لم تكن المكتبة موجودة
+                    time.sleep(4)
+                    st.rerun()
             elif job["status"] == "done" and st.session_state.job_running:
                 # اكتمل — حمّل النتائج تلقائياً مع استعادة القوائم
                 if job.get("results"):
