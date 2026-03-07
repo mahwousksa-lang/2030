@@ -402,7 +402,95 @@ def send_missing_products(products: List[Dict]) -> Dict:
     return {"success": True, "message": f"✅ تم إرسال {sent} منتج مفقود إلى Make{skip_msg}{err_msg}"}
 
 
-# ══════════════════════════════════════════════════════════════════════════
+# ══# ══════════════════════════════════════════════════════════════════════
+#  إرسال بدفعات ذكية مع retry و progress callback
+# ══════════════════════════════════════════════════════════════════════
+def send_batch_smart(products: list, batch_type: str = "update",
+                     batch_size: int = 20, max_retries: int = 3,
+                     progress_cb=None, confidence_filter: str = "") -> Dict:
+    """
+    إرسال بدفعات ذكية مع retry تلقائي و progress callback.
+    batch_type: "update" (تحديث أسعار) | "new" (منتجات جديدة/مفقودة)
+    confidence_filter: "green" | "yellow" | "" (كل المستويات)
+    progress_cb: callable(sent, failed, total, current_name)
+    """
+    if not products:
+        return {"success": False, "message": "❌ لا توجد منتجات للإرسال",
+                "sent": 0, "failed": 0, "total": 0, "errors": []}
+
+    # فلترة حسب الثقة (للمفقودات)
+    if confidence_filter:
+        products = [p for p in products
+                    if p.get("مستوى_الثقة", "green") == confidence_filter
+                    or p.get("confidence_level", "green") == confidence_filter]
+
+    total = len(products)
+    if total == 0:
+        return {"success": False, "message": "❌ لا توجد منتجات بهذا المستوى من الثقة",
+                "sent": 0, "failed": 0, "total": 0, "errors": []}
+
+    sent_count = 0
+    fail_count = 0
+    error_names = []
+
+    # تقسيم لدفعات
+    for i in range(0, total, batch_size):
+        batch = products[i:i + batch_size]
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                if batch_type == "update":
+                    result = send_price_updates(batch)
+                else:
+                    result = send_new_products(batch)
+
+                if result["success"]:
+                    sent_count += len(batch)
+                    break
+                elif attempt < max_retries:
+                    time.sleep(2 * attempt)  # backoff
+                    continue
+                else:
+                    fail_count += len(batch)
+                    error_names.extend([p.get("name", p.get("منتج_المنافس", "?"))[:30] for p in batch])
+            except Exception:
+                if attempt >= max_retries:
+                    fail_count += len(batch)
+                    error_names.extend([p.get("name", "?")[:30] for p in batch])
+                else:
+                    time.sleep(2 * attempt)
+
+        # progress callback
+        if progress_cb:
+            try:
+                progress_cb(sent_count, fail_count, total,
+                           batch[-1].get("name", "")[:30] if batch else "")
+            except Exception:
+                pass
+
+        # تأخير بين الدفعات
+        if i + batch_size < total:
+            time.sleep(0.5)
+
+    success = sent_count > 0
+    msg_parts = []
+    if sent_count > 0:
+        msg_parts.append(f"✅ نجح {sent_count}")
+    if fail_count > 0:
+        msg_parts.append(f"❌ فشل {fail_count}")
+    msg = f"إرسال {total} منتج: {' | '.join(msg_parts)}"
+
+    return {
+        "success":  success,
+        "message":  msg,
+        "sent":     sent_count,
+        "failed":   fail_count,
+        "total":    total,
+        "errors":   error_names[:20],  # أول 20 خطأ فقط
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════
 #  فحص حالة الاتصال بـ Webhooks
 # ══════════════════════════════════════════════════════════════════════════
 def verify_webhook_connection() -> Dict:

@@ -45,7 +45,8 @@ from utils.helpers import (apply_filters, get_filter_options, export_to_excel,
                             safe_float, format_price, format_diff)
 from utils.make_helper import (send_price_updates, send_new_products,
                                 send_missing_products, send_single_product,
-                                verify_webhook_connection, export_to_make_format)
+                                verify_webhook_connection, export_to_make_format,
+                                send_batch_smart)
 from utils.db_manager import (init_db, log_event, log_decision,
                                log_analysis, get_events, get_decisions,
                                get_analysis_history, upsert_price_history,
@@ -744,29 +745,27 @@ if page == "📊 لوحة التحكم":
                     data=excel_all, file_name="mahwous_all.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         with cc2:
-            if st.button("📤 إرسال كل شيء لـ Make"):
+            if st.button("📤 إرسال كل شيء لـ Make (دفعات ذكية)"):
+                _prog_all = st.progress(0, text="جاري الإرسال...")
+                _status_all = st.empty()
                 _sent_total = 0
-                # سعر أعلى → نُخفّض (raise)
-                if "price_raise" in r and not r["price_raise"].empty:
-                    _p = export_to_make_format(r["price_raise"], "raise")
-                    _res = send_price_updates(_p)
-                    if _res["success"]: _sent_total += len(_p)
-                # سعر أقل → نرفع (lower)
-                if "price_lower" in r and not r["price_lower"].empty:
-                    _p = export_to_make_format(r["price_lower"], "lower")
-                    _res = send_price_updates(_p)
-                    if _res["success"]: _sent_total += len(_p)
-                # موافق عليها
-                if "approved" in r and not r["approved"].empty:
-                    _p = export_to_make_format(r["approved"], "approved")
-                    _res = send_price_updates(_p)
-                    if _res["success"]: _sent_total += len(_p)
-                # مفقودة → منتجات جديدة
-                if "missing" in r and not r["missing"].empty:
-                    _p = export_to_make_format(r["missing"], "missing")
-                    _res = send_missing_products(_p)
-                    if _res["success"]: _sent_total += len(_p)
-                st.success(f"✅ تم إرسال {_sent_total} منتج لـ Make!")
+                _fail_total = 0
+                _sections = [
+                    ("price_raise", "raise", "update", "🔴 سعر أعلى"),
+                    ("price_lower", "lower", "update", "🟢 سعر أقل"),
+                    ("approved",    "approved", "update", "✅ موافق"),
+                    ("missing",     "missing", "new", "🔍 مفقودة"),
+                ]
+                for _si, (_key, _sec, _btype, _label) in enumerate(_sections):
+                    if _key in r and not r[_key].empty:
+                        _p = export_to_make_format(r[_key], _sec)
+                        _res = send_batch_smart(_p, batch_type=_btype, batch_size=20, max_retries=3)
+                        _sent_total += _res.get("sent", 0)
+                        _fail_total += _res.get("failed", 0)
+                        _status_all.caption(f"{_label}: ✅ {_res.get('sent',0)} | ❌ {_res.get('failed',0)}")
+                    _prog_all.progress((_si + 1) / len(_sections), text=f"جاري: {_label}")
+                _prog_all.progress(1.0, text="اكتمل")
+                st.success(f"✅ تم إرسال {_sent_total} منتج لـ Make!" + (f" (فشل {_fail_total})" if _fail_total else ""))
     else:
         # استئناف آخر job؟
         last = get_last_job()
@@ -1047,11 +1046,29 @@ elif page == "🔍 منتجات مفقودة":
                 _csv_m = filtered.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
                 st.download_button("📄 CSV", data=_csv_m, file_name="missing.csv", mime="text/csv", key="miss_csv")
             with cc3:
-                if st.button("📤 إرسال كل لـ Make", key="miss_make_all"):
+                # ── خيارات الإرسال الذكي ─────────────────────────────
+                _conf_opts = {"🟢 مؤكدة فقط": "green", "🟡 محتملة": "yellow", "🔵 الكل": ""}
+                _conf_sel = st.selectbox("مستوى الثقة", list(_conf_opts.keys()), key="miss_conf_sel")
+                _conf_val = _conf_opts[_conf_sel]
+                if st.button("📤 إرسال بدفعات ذكية لـ Make", key="miss_make_all"):
                     # فلتر المفقودة الفعلية فقط (بدون التستر/الأساسي المتاح)
                     _to_send = filtered[filtered["نوع_متاح"].str.strip() == ""] if "نوع_متاح" in filtered.columns else filtered
                     products = export_to_make_format(_to_send, "missing")
-                    res = send_missing_products(products)
+                    # إضافة مستوى الثقة لكل منتج
+                    for _ip, _pr_row in enumerate(products):
+                        if _ip < len(_to_send):
+                            _pr_row["مستوى_الثقة"] = str(_to_send.iloc[_ip].get("مستوى_الثقة", "green"))
+                    _prog_bar = st.progress(0, text="جاري الإرسال...")
+                    _status_txt = st.empty()
+                    def _miss_progress(sent, failed, total, cur_name):
+                        pct = (sent + failed) / max(total, 1)
+                        _prog_bar.progress(min(pct, 1.0), text=f"إرسال: {sent}/{total} | {cur_name}")
+                        _status_txt.caption(f"✅ {sent} | ❌ {failed} | الإجمالي {total}")
+                    res = send_batch_smart(products, batch_type="new",
+                                           batch_size=20, max_retries=3,
+                                           progress_cb=_miss_progress,
+                                           confidence_filter=_conf_val)
+                    _prog_bar.progress(1.0, text="اكتمل")
                     if res["success"]:
                         st.success(res["message"])
                         # v26: احفظ في قائمة المعالجة
@@ -1062,6 +1079,10 @@ elif page == "🔍 منتجات مفقودة":
                                          new_price=safe_float(_pr.get('سعر_المنافس',0)))
                     else:
                         st.error(res["message"])
+                    if res.get("errors"):
+                        with st.expander(f"❌ منتجات فشلت ({len(res['errors'])})"):
+                            for _en in res["errors"]:
+                                st.caption(f"• {_en}")
 
             st.caption(f"{len(filtered)} منتج — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
