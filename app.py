@@ -1015,12 +1015,14 @@ elif page == "🔍 منتجات مفقودة":
             # ── فلاتر ─────────────────────────────────────────────────────
             opts = get_filter_options(df)
             with st.expander("🔍 فلاتر", expanded=False):
-                c1,c2,c3,c4 = st.columns(4)
+                c1,c2,c3,c4,c5 = st.columns(5)
                 search   = c1.text_input("🔎 بحث", key="miss_s")
                 brand_f  = c2.selectbox("الماركة", opts["brands"], key="miss_b")
                 comp_f   = c3.selectbox("المنافس", opts["competitors"], key="miss_c")
                 variant_f= c4.selectbox("النوع",
                     ["الكل","مفقود فعلاً","يوجد تستر","يوجد الأساسي"], key="miss_v")
+                conf_f   = c5.selectbox("الثقة",
+                    ["الكل","🟢 مؤكد","🟡 محتمل","🔴 مشكوك"], key="miss_conf_f")
 
             filtered = df.copy()
             if search:
@@ -1035,6 +1037,12 @@ elif page == "🔍 منتجات مفقودة":
                 filtered = filtered[filtered["نوع_متاح"].str.contains("تستر", na=False)]
             elif variant_f == "يوجد الأساسي" and "نوع_متاح" in filtered.columns:
                 filtered = filtered[filtered["نوع_متاح"].str.contains("الأساسي", na=False)]
+            # فلتر الثقة
+            if conf_f != "الكل" and "مستوى_الثقة" in filtered.columns:
+                _conf_map = {"🟢 مؤكد": "green", "🟡 محتمل": "yellow", "🔴 مشكوك": "red"}
+                _cv = _conf_map.get(conf_f, "")
+                if _cv:
+                    filtered = filtered[filtered["مستوى_الثقة"] == _cv]
 
             # ── تصدير ─────────────────────────────────────────────────────
             cc1,cc2,cc3 = st.columns(3)
