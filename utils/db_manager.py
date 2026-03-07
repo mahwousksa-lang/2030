@@ -5,10 +5,12 @@ utils/db_manager.py - v18.0
 - قرارات لكل منتج (موافق/تأجيل/إزالة)
 - سجل كامل بالتاريخ والوقت
 """
-import sqlite3, json
+import sqlite3, json, os
 from datetime import datetime
 
-DB_PATH = "pricing_v18.db"
+# استخدام /tmp لضمان الكتابة على Streamlit Cloud (مجلد الكود read-only)
+_DB_NAME = "pricing_v18.db"
+DB_PATH = os.path.join("/tmp", _DB_NAME)
 
 
 def _ts():
