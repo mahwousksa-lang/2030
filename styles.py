@@ -165,8 +165,8 @@ def comp_strip(all_comps):
 
 def miss_card(name, price, brand, size, ptype, comp, suggested_price,
               note="", variant_html="", tester_badge="", border_color="#007bff44",
-              confidence_level="green", confidence_score=0):
-    """بطاقة المنتج المفقود المحسنة — أنيقة وواضحة"""
+              confidence_level="green", confidence_score=0, product_id=""):
+    """بطاقة المنتج المفقود المحسنة — أنيقة وواضحة مع عرض الكود"""
     # شارة الثقة
     trust_map = {
         "green":  ("trust-green",  "مؤكد"),
@@ -178,12 +178,17 @@ def miss_card(name, price, brand, size, ptype, comp, suggested_price,
 
     note_html = f'<div style="font-size:.72rem;color:#ff9800;margin-top:4px">{note}</div>' if note and "⚠️" in note else ""
 
+    # عرض الكود/المعرف إذا موجود
+    pid_html = ""
+    if product_id and str(product_id).strip() and str(product_id) not in ("", "nan", "None", "0"):
+        pid_html = f'<span style="font-size:.7rem;padding:2px 8px;border-radius:8px;background:#1a237e44;color:#90caf9;margin-right:6px;font-family:monospace;letter-spacing:1px">📌 {product_id}</span>'
+
     return f"""
     <div class="miss-card" style="border:1px solid {border_color}">
       <div class="miss-header">
         <div class="miss-info">
           <div class="miss-name">
-            {trust_html}{tester_badge}{name}
+            {trust_html}{tester_badge}{pid_html}{name}
           </div>
           <div class="miss-meta">
             🏷️ {brand or "—"} &nbsp;|&nbsp; 📏 {size or "—"} &nbsp;|&nbsp;

@@ -104,7 +104,8 @@ def _split_results(df):
 if st.session_state.results is None and not st.session_state.job_running:
     _auto_job = get_last_job()
     if _auto_job and _auto_job["status"] == "done" and _auto_job.get("results"):
-        _auto_df = pd.DataFrame(_auto_job["results"])
+        _auto_records = _restore_results_from_json(_auto_job["results"])
+        _auto_df = pd.DataFrame(_auto_records)
         if not _auto_df.empty:
             _auto_miss = pd.DataFrame(_auto_job.get("missing", [])) if _auto_job.get("missing") else pd.DataFrame()
             _auto_r = _split_results(_auto_df)
@@ -135,29 +136,91 @@ def decision_badge(action):
     return f'<span style="font-size:.7rem;color:{c};font-weight:700">{label}</span>'
 
 
+def _safe_results_for_json(results_list):
+    """تحويل النتائج لصيغة آمنة للحفظ في JSON/SQLite — يحول القوائم المتداخلة"""
+    safe = []
+    for r in results_list:
+        row = {}
+        for k, v in (r.items() if isinstance(r, dict) else {}):
+            if isinstance(v, list):
+                # تحويل قوائم المنافسين لنص JSON
+                try:
+                    import json as _j
+                    row[k] = _j.dumps(v, ensure_ascii=False, default=str)
+                except Exception:
+                    row[k] = str(v)
+            elif pd.isna(v) if isinstance(v, float) else False:
+                row[k] = 0
+            else:
+                row[k] = v
+        safe.append(row)
+    return safe
+
+
+def _restore_results_from_json(results_list):
+    """استعادة النتائج من JSON — يحول نصوص القوائم لقوائم فعلية"""
+    import json as _j
+    restored = []
+    for r in results_list:
+        row = dict(r) if isinstance(r, dict) else {}
+        for k in ["جميع_المنافسين", "جميع المنافسين"]:
+            v = row.get(k)
+            if isinstance(v, str):
+                try:
+                    row[k] = _j.loads(v)
+                except Exception:
+                    row[k] = []
+            elif v is None:
+                row[k] = []
+        restored.append(row)
+    return restored
+
+
 def _run_analysis_background(job_id, our_df, comp_dfs, our_file_name, comp_names):
-    """تعمل في thread منفصل — تحفظ النتائج الحقيقية كل 10 منتجات"""
+    """تعمل في thread منفصل — تحفظ النتائج كل 10 منتجات مع حماية شاملة من الأخطاء"""
     total     = len(our_df)
     processed = 0
+    _last_save = [0]  # آخر عدد تم حفظه (mutable لـ closure)
 
     def progress_cb(pct, current_results):
         nonlocal processed
         processed = int(pct * total)
-        if processed % 10 == 0 or processed >= total:
-            save_job_progress(
-                job_id, total, processed,
-                current_results,  # ← النتائج الفعلية المتراكمة
-                "running",
-                our_file_name, comp_names
-            )
+        # حفظ كل 10 منتجات أو عند الاكتمال
+        if processed - _last_save[0] >= 10 or processed >= total:
+            _last_save[0] = processed
+            try:
+                safe_res = _safe_results_for_json(current_results)
+                save_job_progress(
+                    job_id, total, processed,
+                    safe_res,
+                    "running",
+                    our_file_name, comp_names
+                )
+            except Exception:
+                pass  # لا نوقف المعالجة بسبب خطأ حفظ
 
+    analysis_df = pd.DataFrame()
+    missing_df  = pd.DataFrame()
+
+    # ── المرحلة 1: التحليل الرئيسي ──────────────────────────────────
     try:
         analysis_df = run_full_analysis(
             our_df, comp_dfs,
             progress_callback=progress_cb
         )
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        # حفظ ما تم تحليله حتى الآن كنتائج جزئية
+        save_job_progress(
+            job_id, total, processed,
+            [], f"error: تحليل المقارنة فشل — {str(e)[:200]}",
+            our_file_name, comp_names
+        )
+        return
 
-        # حفظ تاريخ الأسعار
+    # ── المرحلة 2: حفظ تاريخ الأسعار (لا يوقف المعالجة إذا فشل) ────
+    try:
         for _, row in analysis_df.iterrows():
             if safe_float(row.get("نسبة_التطابق", 0)) > 0:
                 upsert_price_history(
@@ -169,29 +232,52 @@ def _run_analysis_background(job_id, our_df, comp_dfs, our_file_name, comp_names
                     safe_float(row.get("نسبة_التطابق", 0)),
                     str(row.get("القرار",         ""))
                 )
+    except Exception:
+        pass  # تاريخ الأسعار ثانوي — لا نوقف المعالجة
 
+    # ── المرحلة 3: المنتجات المفقودة (منفصلة عن التحليل) ────────────
+    try:
         missing_df = find_missing_products(our_df, comp_dfs)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        missing_df = pd.DataFrame()  # فشلت المفقودة لكن النتائج الرئيسية محفوظة
+
+    # ── المرحلة 4: الحفظ النهائي ────────────────────────────────────
+    try:
+        safe_records = _safe_results_for_json(analysis_df.to_dict("records"))
+        safe_missing = missing_df.to_dict("records") if not missing_df.empty else []
 
         save_job_progress(
             job_id, total, total,
-            analysis_df.to_dict("records"),
+            safe_records,
             "done",
             our_file_name, comp_names,
-            missing=missing_df.to_dict("records") if not missing_df.empty else []
+            missing=safe_missing
         )
         log_analysis(
             our_file_name, comp_names, total,
             int((analysis_df.get("نسبة_التطابق", pd.Series(dtype=float)) > 0).sum()),
             len(missing_df)
         )
-
     except Exception as e:
         import traceback
-        save_job_progress(
-            job_id, total, processed,
-            [], f"error: {str(e)}",
-            our_file_name, comp_names
-        )
+        traceback.print_exc()
+        # محاولة أخيرة — حفظ بدون missing
+        try:
+            save_job_progress(
+                job_id, total, total,
+                _safe_results_for_json(analysis_df.to_dict("records")),
+                "done",
+                our_file_name, comp_names,
+                missing=[]
+            )
+        except Exception:
+            save_job_progress(
+                job_id, total, processed,
+                [], f"error: فشل الحفظ النهائي — {str(e)[:200]}",
+                our_file_name, comp_names
+            )
 
 
 # ════════════════════════════════════════════════
@@ -670,9 +756,10 @@ with st.sidebar:
                 time.sleep(3)
                 st.rerun()
             elif job["status"] == "done" and st.session_state.job_running:
-                # اكتمل — حمّل النتائج تلقائياً
+                # اكتمل — حمّل النتائج تلقائياً مع استعادة القوائم
                 if job.get("results"):
-                    df_all = pd.DataFrame(job["results"])
+                    _restored = _restore_results_from_json(job["results"])
+                    df_all = pd.DataFrame(_restored)
                     missing_df = pd.DataFrame(job.get("missing", [])) if job.get("missing") else pd.DataFrame()
                     _r = _split_results(df_all)
                     _r["missing"] = missing_df
@@ -811,7 +898,8 @@ if page == "📊 لوحة التحكم":
         if last and last["status"] == "done" and last.get("results"):
             st.info(f"💾 يوجد تحليل محفوظ من {last.get('updated_at','')}")
             if st.button("🔄 استعادة النتائج المحفوظة"):
-                df_all = pd.DataFrame(last["results"])
+                _restored_last = _restore_results_from_json(last["results"])
+                df_all = pd.DataFrame(_restored_last)
                 if not df_all.empty:
                     missing_df = pd.DataFrame(last.get("missing", [])) if last.get("missing") else pd.DataFrame()
                     _r = _split_results(df_all)
@@ -1159,6 +1247,22 @@ elif page == "🔍 منتجات مفقودة":
                 size            = str(row.get("الحجم", ""))
                 ptype           = str(row.get("النوع", ""))
                 note            = str(row.get("ملاحظة", ""))
+                # استخراج معرف المنتج (SKU/الكود)
+                _miss_pid_raw = (
+                    row.get("معرف_المنافس", "") or
+                    row.get("product_id", "") or
+                    row.get("رقم المنتج", "") or
+                    row.get("رقم_المنتج", "") or
+                    row.get("SKU", "") or
+                    row.get("sku", "") or
+                    row.get("الكود", "") or
+                    row.get("كود", "") or
+                    row.get("الباركود", "") or ""
+                )
+                _miss_pid = ""
+                if _miss_pid_raw and str(_miss_pid_raw) not in ("", "nan", "None", "0", "NaN"):
+                    try: _miss_pid = str(int(float(str(_miss_pid_raw))))
+                    except: _miss_pid = str(_miss_pid_raw).strip()
                 variant_label   = str(row.get("نوع_متاح", ""))
                 variant_product = str(row.get("منتج_متاح", ""))
                 variant_score   = safe_float(row.get("نسبة_التشابه", 0))
@@ -1205,7 +1309,8 @@ elif page == "🔍 منتجات مفقودة":
                     note=note if _is_similar else "",
                     variant_html=_variant_html, tester_badge=_tester_badge,
                     border_color=_border,
-                    confidence_level=conf_level, confidence_score=conf_score
+                    confidence_level=conf_level, confidence_score=conf_score,
+                    product_id=_miss_pid
                 ), unsafe_allow_html=True)
 
                 # ── الأزرار — صف 1 ────────────────────────────────────

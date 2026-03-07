@@ -1008,26 +1008,40 @@ def run_full_analysis(our_df, comp_dfs, progress_callback=None, use_ai=True):
     BATCH   = 12
 
     def _flush():
-        """يُعالج الـ pending batch ويضيف النتائج مباشرة"""
+        """يُعالج الـ pending batch ويضيف النتائج مباشرة — محمي من الأخطاء"""
         if not pending:
             return
-        idxs = _ai_batch(pending)
+        try:
+            idxs = _ai_batch(pending)
+        except Exception:
+            # فشل AI → fallback: استخدم أفضل مرشح fuzzy
+            idxs = []
+            for it in pending:
+                cands = it.get("candidates", [])
+                if cands and cands[0].get("score", 0) >= 88:
+                    idxs.append(0)
+                else:
+                    idxs.append(-1)
         for j, it in enumerate(pending):
-            ci = idxs[j] if j < len(idxs) else 0
-            if ci < 0:
-                # AI غير متأكد → أعطِ أفضل مرشح كمراجعة
-                best_fallback = it["candidates"][0] if it["candidates"] else None
-                rr = _row(it["product"], it["our_price"], it["our_id"],
-                          it["brand"], it["size"], it["ptype"], it["gender"],
-                          best_fallback, "⚠️ تحت المراجعة", "ai_uncertain",
-                          all_cands=it["all_cands"])
-            else:
-                best = it["candidates"][ci]
-                rr = _row(it["product"], it["our_price"], it["our_id"],
-                          it["brand"], it["size"], it["ptype"], it["gender"],
-                          best, src="gemini", all_cands=it["all_cands"])
-            if rr is not None:   # ← فلتر None (score < 60%)
-                results.append(rr)
+            try:
+                ci = idxs[j] if j < len(idxs) else 0
+                if ci < 0:
+                    # AI غير متأكد → أعطِ أفضل مرشح كمراجعة
+                    best_fallback = it["candidates"][0] if it["candidates"] else None
+                    rr = _row(it["product"], it["our_price"], it["our_id"],
+                              it["brand"], it["size"], it["ptype"], it["gender"],
+                              best_fallback, "⚠️ تحت المراجعة", "ai_uncertain",
+                              all_cands=it["all_cands"])
+                else:
+                    best = it["candidates"][ci]
+                    rr = _row(it["product"], it["our_price"], it["our_id"],
+                              it["brand"], it["size"], it["ptype"], it["gender"],
+                              best, src="gemini", all_cands=it["all_cands"])
+                if rr is not None:
+                    results.append(rr)
+            except Exception:
+                # خطأ في منتج واحد → تخطيه وأكمل
+                continue
         pending.clear()
 
     for i, (_, row) in enumerate(our_df.iterrows()):
