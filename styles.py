@@ -1,5 +1,5 @@
 """
-styles.py - التصميم v17.0 (خفيف جداً)
+styles.py - التصميم v18.0
 """
 
 def get_styles():
@@ -39,15 +39,14 @@ def get_main_css():
 .ai-box{background:#1A1A2E;padding:12px;border-radius:8px;border:1px solid #333344;margin:6px 0}
 .paste-area{background:#0E1117;border:2px dashed #333344;border-radius:8px;padding:12px;min-height:80px}
 .multi-comp{background:rgba(0,123,255,.06);border:1px solid rgba(0,123,255,.2);border-radius:6px;padding:8px;margin:4px 0}
-section[data-testid="stSidebar"]{background:linear-gradient(180deg,#0E1117,#1A1A2E)}
+section[data-testid="stSidebar"]{background:linear-gradient(180deg,#0E1117,#1A1A2E);transition:all .3s ease}
 #MainMenu,footer,header{visibility:hidden}
-/* إصلاح مشكلة arr✓✓ight - إخفاء أيقونات Streamlit المكسورة */
+/* إصلاح أيقونات Streamlit */
 [data-testid="stExpander"] summary svg,
 [data-testid="stSelectbox"] svg[data-testid="stExpanderToggleIcon"],
 details summary span[data-testid] svg {
     font-family: system-ui, -apple-system, sans-serif !important;
 }
-/* تحسين عرض Expander و Selectbox مع النصوص العربية */
 [data-testid="stExpander"] summary {
     direction: rtl;
     font-family: 'Tajawal', sans-serif !important;
@@ -56,7 +55,88 @@ details summary span[data-testid] svg {
     direction: rtl;
     font-family: 'Tajawal', sans-serif !important;
 }
+/* ── زر إخفاء/إظهار القائمة الجانبية ── */
+#sidebar-toggle-btn {
+    position: fixed;
+    top: 50%;
+    left: 0;
+    transform: translateY(-50%);
+    z-index: 99999;
+    background: linear-gradient(180deg,#6C63FF,#4a42cc);
+    color: #fff;
+    border: none;
+    border-radius: 0 10px 10px 0;
+    width: 20px;
+    height: 64px;
+    cursor: pointer;
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 3px 0 10px rgba(108,99,255,.5);
+    transition: all .25s ease;
+    padding: 0;
+    line-height: 1;
+}
+#sidebar-toggle-btn:hover {
+    width: 26px;
+    background: linear-gradient(180deg,#7c74ff,#5a52dc);
+    box-shadow: 4px 0 14px rgba(108,99,255,.7);
+}
+#sidebar-toggle-btn .arrow {
+    font-size: 14px;
+    font-style: normal;
+    transition: transform .25s ease;
+}
 </style>"""
+
+
+def get_sidebar_toggle_js():
+    """JavaScript لزر إخفاء/إظهار القائمة الجانبية"""
+    return """
+<button id="sidebar-toggle-btn" onclick="toggleSidebar()" title="إخفاء/إظهار القائمة">
+  <span class="arrow" id="toggle-arrow">◀</span>
+</button>
+<script>
+(function() {
+    var _hidden = false;
+
+    function toggleSidebar() {
+        var sidebar = window.parent.document.querySelector('[data-testid="stSidebar"]');
+        var btn     = window.parent.document.getElementById('sidebar-toggle-btn');
+        var arrow   = window.parent.document.getElementById('toggle-arrow');
+        if (!sidebar) return;
+
+        _hidden = !_hidden;
+        if (_hidden) {
+            sidebar.style.display = 'none';
+            btn.style.left = '0px';
+            if (arrow) arrow.textContent = '▶';
+        } else {
+            sidebar.style.display = '';
+            if (arrow) arrow.textContent = '◀';
+        }
+    }
+
+    // تأكد أن الزر موجود في الـ parent document
+    window.parent.toggleSidebar = toggleSidebar;
+
+    // نقل الزر إلى parent document إذا كان في iframe
+    window.addEventListener('load', function() {
+        var existingBtn = window.parent.document.getElementById('sidebar-toggle-btn');
+        if (!existingBtn) {
+            var btn = document.getElementById('sidebar-toggle-btn');
+            if (btn) {
+                window.parent.document.body.appendChild(btn.cloneNode(true));
+                // إعادة ربط الحدث
+                var newBtn = window.parent.document.getElementById('sidebar-toggle-btn');
+                if (newBtn) newBtn.onclick = function() { window.parent.toggleSidebar(); };
+            }
+        }
+    });
+})();
+</script>
+"""
 
 
 def stat_card(icon, label, value, color="#6C63FF"):

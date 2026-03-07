@@ -28,7 +28,7 @@ except ImportError:
         def add_script_run_ctx(t): return t  # fallback آمن
 
 from config import *
-from styles import get_styles, stat_card, vs_card
+from styles import get_styles, stat_card, vs_card, get_sidebar_toggle_js
 from engines.engine import (read_file, run_full_analysis, find_missing_products,
                              extract_brand, extract_size, extract_type, is_sample)
 from engines.ai_engine import (call_ai, gemini_chat, chat_with_ai,
@@ -60,6 +60,7 @@ from utils.db_manager import (init_db, log_event, log_decision,
 st.set_page_config(page_title=APP_TITLE, page_icon=APP_ICON,
                    layout="wide", initial_sidebar_state="expanded")
 st.markdown(get_styles(), unsafe_allow_html=True)
+st.markdown(get_sidebar_toggle_js(), unsafe_allow_html=True)
 init_db()
 init_db_v26()
 
